@@ -1,7 +1,9 @@
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { sentryVitePlugin } from '@sentry/vite-plugin'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 
 const path = (relative: string) => fileURLToPath(new URL(relative, import.meta.url))
@@ -18,10 +20,43 @@ if (sentryEnabled && !appVersion) {
   throw new Error('VITE_APP_VERSION is required when uploading Sentry source maps')
 }
 
+// The platform UI kit (`src/ui-kit/contract.ts`) has one skin per target platform. The target is
+// an explicit build input, never guessed from the host OS. Only bundles that import the kit need
+// it, so a missing value is an error when `@ui-skin` is resolved; a value that is not a known
+// platform is an error for every build. A build with a target writes it to `.ui-platform` in the
+// output, and the packaging scripts refuse a dist built for another target.
+const uiPlatforms = ['windows', 'macos']
+const uiPlatformMarker = '.ui-platform'
+function uiSkin(): Plugin {
+  const platform = process.env.UC_UI_PLATFORM
+  const required = `UC_UI_PLATFORM=${uiPlatforms.join('|')}`
+  return {
+    name: 'uc-ui-skin',
+    enforce: 'pre',
+    buildStart() {
+      if (platform && !uiPlatforms.includes(platform)) this.error(`${required} (got "${platform}")`)
+    },
+    resolveId(source) {
+      if (source !== '@ui-skin') return null
+      if (!platform || !uiPlatforms.includes(platform)) {
+        this.error(`@/ui-kit needs ${required} (got ${platform ? `"${platform}"` : 'nothing'})`)
+      }
+      const entry = path(`./src/ui-kit/skins/${platform}/index.ts`)
+      if (!existsSync(entry)) this.error(`The ${platform} skin of @/ui-kit is missing: ${entry}`)
+      return entry
+    },
+    generateBundle() {
+      if (platform)
+        this.emitFile({ type: 'asset', fileName: uiPlatformMarker, source: `${platform}\n` })
+    },
+  }
+}
+
 // The whole frontend lives in this directory: the business sources are `src` (`@`), the Wails
 // host modules `src/host`. The same config builds the three documents and runs the vitest suite.
 export default defineConfig({
   plugins: [
+    uiSkin(),
     react(),
     tailwindcss(),
     sentryVitePlugin({
