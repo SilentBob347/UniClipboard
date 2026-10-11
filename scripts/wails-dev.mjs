@@ -24,7 +24,12 @@ Runs the Go GUI in development mode with frontend hot reload. The profile
 keeps data, keychain entries and the daemon separate from the production app.`
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { stdio: 'inherit', cwd: root, ...options })
+  const result = spawnSync(command, args, {
+    stdio: 'inherit',
+    cwd: root,
+    windowsHide: true,
+    ...options,
+  })
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(' ')} failed (${result.status ?? result.error})`)
   }
@@ -56,7 +61,9 @@ export function makeDevBundle(binary) {
 async function waitForServer(port, child, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error('Vite dev server exited before it was ready')
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error('Vite dev server exited before it was ready')
+    }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`)
       if (response.ok) return
@@ -87,8 +94,8 @@ export async function main(argv, env = process.env) {
     )
     return 1
   }
-  if (process.platform !== 'darwin') {
-    console.error('The Go GUI currently runs only on macOS.')
+  if (!['darwin', 'win32'].includes(process.platform)) {
+    console.error('The development launcher currently supports macOS and Windows.')
     return 1
   }
 
@@ -111,9 +118,9 @@ export async function main(argv, env = process.env) {
   fs.mkdirSync(path.join(gui, 'frontend/dist'), { recursive: true })
   fs.writeFileSync(path.join(gui, 'frontend/dist/.gitkeep'), '')
   // No `production` tag: Wails then proxies assets to FRONTEND_DEVSERVER_URL.
-  const built = path.join(out, 'gui-go-dev')
+  const built = path.join(out, process.platform === 'win32' ? 'gui-go-dev.exe' : 'gui-go-dev')
   run('go', ['build', '-o', built, '.'], { cwd: gui })
-  const binary = makeDevBundle(built)
+  const binary = process.platform === 'darwin' ? makeDevBundle(built) : built
 
   const childEnv = {
     ...env,
@@ -123,35 +130,68 @@ export async function main(argv, env = process.env) {
     // The host resolves the daemon next to itself or on PATH.
     PATH: `${path.join(root, 'target/debug')}${path.delimiter}${env.PATH ?? ''}`,
   }
-  const vite = spawn('bun', ['--bun', 'run', '--cwd', 'apps/gui-go/frontend', 'dev'], {
-    cwd: root,
+  // Run Vite directly so stopping this child also stops the server on Windows.
+  const vite = spawn(process.execPath, [path.join(root, 'node_modules/vite/bin/vite.js')], {
+    cwd: path.join(gui, 'frontend'),
     env: childEnv,
     stdio: 'inherit',
+    windowsHide: true,
   })
   let app
+  let stopping = false
+  let interrupted = false
   const stop = () => {
+    if (stopping) return
+    stopping = true
     vite.kill('SIGTERM')
-    app?.kill('SIGTERM')
+    if (!app?.pid || app.exitCode !== null || app.signalCode !== null) return
+    if (process.platform === 'win32') {
+      // Node's kill() uses TerminateProcess on Windows, bypassing the host's
+      // shutdown hook. Include its detached daemon and helpers in the stop.
+      const result = spawnSync('taskkill', ['/PID', String(app.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+        timeout: 10_000,
+      })
+      if (result.error)
+        console.error(`[wails-dev] failed to stop app process tree: ${result.error.message}`)
+    } else {
+      app.kill('SIGTERM')
+    }
   }
-  process.on('SIGINT', stop)
-  process.on('SIGTERM', stop)
+  const interrupt = () => {
+    interrupted = true
+    stop()
+  }
+  process.on('SIGINT', interrupt)
+  process.on('SIGTERM', interrupt)
   try {
     await waitForServer(port, vite)
+    if (stopping) return 130
+    app = spawn(binary, [], {
+      cwd: root,
+      env: { ...childEnv, FRONTEND_DEVSERVER_URL: `http://127.0.0.1:${port}` },
+      stdio: 'inherit',
+      windowsHide: true,
+      // Keep Ctrl+C from terminating the GUI before the launcher stops its tree.
+      detached: process.platform === 'win32',
+    })
+    const code = await new Promise(resolve => {
+      app.once('exit', (status, signal) => resolve(status ?? (signal ? 1 : 0)))
+      app.once('error', error => {
+        console.error(`[wails-dev] failed to start GUI: ${error.message}`)
+        resolve(1)
+      })
+    })
+    return interrupted ? 130 : code
   } catch (error) {
+    if (!interrupted) console.error(error.message)
+    return interrupted ? 130 : 1
+  } finally {
     stop()
-    console.error(error.message)
-    return 1
+    process.off('SIGINT', interrupt)
+    process.off('SIGTERM', interrupt)
   }
-  app = spawn(binary, [], {
-    cwd: root,
-    env: { ...childEnv, FRONTEND_DEVSERVER_URL: `http://127.0.0.1:${port}` },
-    stdio: 'inherit',
-  })
-  const code = await new Promise(resolve =>
-    app.on('exit', (status, signal) => resolve(status ?? (signal ? 1 : 0)))
-  )
-  vite.kill('SIGTERM')
-  return code
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)

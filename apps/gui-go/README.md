@@ -29,12 +29,21 @@ Wails v3 桌面宿主，保留 Rust daemon/Engine，复用现有 React 与 HTTP/
 ```sh
 bun wails:dev                    # profile 为 dev
 bun wails:dev:profile <profile>  # 其他开发 profile
+bun wails:build                  # 构建本地应用，不启动
+bun wails:build --release        # Windows 发布构建，并生成便携 ZIP
 ```
+
+`bun wails:build` 复用现有平台构建脚本，构建前端、daemon、原生快捷面板、CLI 与 GUI。Windows 产物位于 `target/gui-go/windows-production/`（入口 `gui-go.exe`），macOS 产物为 `target/gui-go/UniClipboardGo.app`。该命令生成本地应用，不生成安装包；Go 使用 `production` 标签，Rust 沿用现有脚本的 debug 构建。Windows 需要 Python，macOS 需要 Bash 与 Python 3。
+
+Windows 上使用 `bun wails:build --release` 构建发布便携版：Rust 使用 `cargo build --release`，Go 使用 `production,release` 标签并移除调试符号，前端嵌入 GUI，无需 Vite。产物位于 `target/gui-go/windows-release/`，包括 `UniClipboard.exe`、daemon、原生快捷面板、CLI、构建清单与 `UniClipboard_<版本>_<x64|arm64>-portable.zip`。便携 ZIP 复用发布流水线的文件布局，包含 `portable.dat`，解压后数据保存在程序旁的 `data/`；该本地命令不进行 Authenticode 签名，也不生成安装包。启动发布版前需清除 `UC_PROFILE` 和 `UNICLIPBOARD_ENV=development` 等开发环境设置。macOS 暂不支持此命令的 `--release` 参数。
+
+发布构建需要 Windows SDK 的 `fxc.exe` 编译快捷面板着色器。脚本优先使用 `GPUI_FXC_PATH`，否则从 PATH 或已安装的 Windows SDK 中查找；首次发布构建的 Rust 优化与链接耗时较长。
 
 脚本 `scripts/wails-dev.mjs` 依次构建 daemon 与 Go 宿主（不带 `production` 标签），启动 Vite 开发服务器
 （按 profile 取固定端口，被占用则换端口）并让应用通过 `FRONTEND_DEVSERVER_URL` 加载它，前端修改即时热更新；
 Go 或 daemon 改动需重启命令。使用你自己的 HOME 与指定 profile，数据、钥匙串条目和 daemon 与正式版隔离。
-开发二进制会先放进最小的 ad-hoc 签名 `.app`（`target/gui-go/dev/UniClipboardGoDev.app`，标识为 `app.json` 中的应用标识加 `.dev`），因为 Wails 的通知服务在 macOS 上没有 bundle identifier 就拒绝启动（`notifications require a valid bundle identifier`），裸二进制会直接退出；它仍作为普通子进程启动，标准输出、退出码与 SIGTERM 不变。
+按 Ctrl+C 会停止 Vite 与 GUI。Windows 启动器同时结束本次 GUI 启动的进程树，包括 daemon 和辅助进程；复用的已有 daemon 不属于该进程树。旧版启动器留下的 daemon 需要先从托盘退出，再重新运行开发命令。
+开发启动脚本支持 macOS 与 Windows。macOS 开发二进制会先放进最小的 ad-hoc 签名 `.app`（`target/gui-go/dev/UniClipboardGoDev.app`，标识为 `app.json` 中的应用标识加 `.dev`），因为 Wails 的通知服务在 macOS 上没有 bundle identifier 就拒绝启动（`notifications require a valid bundle identifier`），裸二进制会直接退出；它仍作为普通子进程启动，标准输出、退出码与 SIGTERM 不变。Windows 直接运行 `target/gui-go/dev/gui-go-dev.exe`，从 Vite 加载前端并支持热更新。
 宿主只在 `UNICLIPBOARD_ENV=development` 且设置了合法 `UC_PROFILE` 时启动；测试用的隔离模式
 （`UC_GUI_GO_ISOLATED=1`，临时 HOME、`gui-go-*` profile、禁用系统剪贴板）仍由 E2E 强制。
 
