@@ -1664,6 +1664,8 @@
 }
 
 .mac-split {
+  --sidebar-width: 236px;
+  --sidebar-transition: 280ms cubic-bezier(0.2, 0, 0, 1);
   position: relative;
   height: 100%;
   display: flex;
@@ -1671,14 +1673,20 @@
 }
 
 .mac-split-sidebar {
-  width: 236px;
+  width: var(--sidebar-width);
   flex-shrink: 0;
   display: flex;
+  overflow: hidden;
+  transition: width var(--sidebar-transition);
+}
+
+.mac-split[data-sidebar-hidden] .mac-split-sidebar {
+  width: 0;
 }
 
 .mac-split-sidebar > .mac-surface {
   flex-grow: 1;
-  min-width: 0;
+  min-width: var(--sidebar-width);
   box-shadow: inset -0.5px 0 0 var(--separator);
 }
 
@@ -1690,6 +1698,11 @@
   flex-direction: column;
   overflow-y: auto;
   position: relative;
+  transition: transform var(--sidebar-transition);
+}
+
+.mac-split[data-sidebar-hidden] .mac-split-sidebar-inner {
+  transform: translateX(-100%);
 }
 
 /* The title-bar strip of the sidebar: traffic lights (native) and the sidebar button. */
@@ -1776,6 +1789,7 @@
   gap: 10px;
   z-index: 3;
   --wails-draggable: drag;
+  transition: left var(--sidebar-transition);
 }
 
 /* Hidden sidebar: the traffic lights (about 70 pt) and the sidebar button lead the toolbar. */
@@ -1822,10 +1836,17 @@
   flex: 0 1 500px;
   min-width: 300px;
   box-shadow: inset -0.5px 0 0 var(--separator);
+  transition: flex-basis var(--sidebar-transition);
 }
 
 .mac-split[data-sidebar-hidden] .mac-pane[data-pane='list'] {
   flex-basis: 560px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mac-split {
+    --sidebar-transition: 0s;
+  }
 }
 
 .mac-pane[data-pane='detail'] {
@@ -2643,39 +2664,109 @@
 }
 
 .mac-combo-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  width: 300px;
-  z-index: 10;
+  width: 18.75rem;
+  min-width: 0;
+  max-width: var(--available-width);
+  max-height: var(--available-height);
+  overflow-y: auto;
+  padding: 0.375rem;
+  border-radius: 0.875rem;
 }
 
-.mac-combo-menu[hidden] {
-  display: none;
+.mac-combo-menu [role='listbox'] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.mac-combo-option {
+  border-radius: 0.5rem;
+}
+
+.mac-combo-option[data-highlighted] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.mac-combo-menu .mac-suggestion {
+  min-height: 1.875rem;
+  padding: 0 0.625rem;
+  background: transparent;
+  color: inherit;
+}
+
+.mac-combo-menu .mac-suggestion-label,
+.mac-combo-menu .mac-suggestion-create {
+  font-weight: 400;
+}
+
+.mac-combo-menu .mac-suggestion-detail {
+  flex-grow: 0;
+  margin-left: auto;
+  font-size: 0.6875rem;
+}
+
+.mac-combo-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mac-combo-option[data-create] {
+  padding: 0.5rem 0 0.625rem;
+  border-radius: 0.5625rem;
+}
+
+.mac-combo-option[data-create] .mac-suggestion {
+  min-height: 0;
+}
+
+.mac-combo-return {
+  margin-left: auto;
 }
 
 .mac-combo-colors {
-  padding: 2px 10px 8px 30px;
+  padding: 0.5rem 0.625rem 0;
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.6875rem;
+}
+
+.mac-combo-colors > span {
+  margin-right: 0.1875rem;
 }
 
 .mac-combo-swatch {
   all: unset;
-  width: 14px;
-  height: 14px;
-  border-radius: 7px;
+  box-sizing: border-box;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 50%;
+  outline: 1px solid var(--separator);
   cursor: default;
+}
+
+.mac-combo-option[data-highlighted] .mac-combo-swatch {
+  outline-color: rgba(255, 255, 255, 0.7);
 }
 
 .mac-combo-swatch[aria-checked='true'] {
   box-shadow:
-    0 0 0 2px var(--content),
+    0 0 0 2px var(--glass),
     0 0 0 3.5px var(--accent);
 }
 
-.mac-suggestion-label {
-  font-weight: 600;
+.mac-combo-option[data-highlighted] .mac-combo-swatch[aria-checked='true'] {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 0 0 3.5px var(--on-accent);
+}
+
+.mac-combo-menu .mac-suggestions-footer {
+  margin: 0.25rem 0.5rem 0;
+  padding: 0.375rem 0.125rem 0.125rem;
 }
 
 .mac-tag-detail {
