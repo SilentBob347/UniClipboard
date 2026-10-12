@@ -1,4 +1,4 @@
-import { Button as FluentButton, mergeClasses } from '@fluentui/react-components'
+import { Button as FluentButton, Spinner, mergeClasses } from '@fluentui/react-components'
 import { createElement } from 'react'
 import type { ButtonProps } from '@/ui-kit/contract'
 import { nameProps } from './accessible-name'
@@ -7,6 +7,7 @@ import { iconFor } from './icons'
 import { WithTooltip } from './WithTooltip'
 
 export function Button({
+  'data-testid': testId,
   variant = 'standard',
   size = 'medium',
   icon,
@@ -14,6 +15,8 @@ export function Button({
   label,
   tooltip,
   disabled,
+  busy,
+  submitForm,
   onClick,
 }: ButtonProps) {
   const elevation = useElevationStyles()
@@ -22,13 +25,23 @@ export function Button({
   return (
     <WithTooltip content={name.tooltip} relationship={name.relationship}>
       <FluentButton
+        data-testid={testId}
         appearance={appearance[variant]}
         size={fluentSize[size]}
-        icon={icon ? createElement(iconFor(icon)) : undefined}
+        icon={
+          busy ? <Spinner size="extra-tiny" /> : icon ? createElement(iconFor(icon)) : undefined
+        }
         aria-label={name.ariaLabel}
-        disabled={disabled}
+        aria-busy={busy || undefined}
+        disabled={disabled || busy}
+        type={submitForm ? 'submit' : 'button'}
+        form={submitForm}
         onClick={onClick ? () => onClick() : undefined}
-        className={mergeClasses(elevation.text, variant === 'standard' && elevation.raised)}
+        className={mergeClasses(
+          elevation.text,
+          variant === 'standard' && elevation.raised,
+          variant === 'link' && elevation.link
+        )}
       >
         {children}
       </FluentButton>

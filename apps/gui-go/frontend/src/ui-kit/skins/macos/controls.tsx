@@ -22,13 +22,15 @@ import { Icon } from './icons'
 import { isImeKey } from './ime'
 import * as parts from './parts'
 import { usePortalContainer } from './portal'
+import { Spinner } from './spinner'
 
 /** `subtle` has no bezel at rest, which on macOS is a borderless button. */
-const tintOf: Record<ButtonVariant, 'primary' | 'none' | 'borderless' | 'destructive'> = {
+const tintOf: Record<ButtonVariant, 'primary' | 'none' | 'borderless' | 'destructive' | 'link'> = {
   primary: 'primary',
   standard: 'none',
   subtle: 'borderless',
   destructive: 'destructive',
+  link: 'link',
 }
 
 /** AppKit help tag: shown on hover after a delay; the trigger keeps its own accessible name. */
@@ -48,6 +50,7 @@ export function WithHelpTag({ text, children }: { text?: string; children: React
 }
 
 export function Button({
+  'data-testid': testId,
   variant = 'standard',
   size = 'medium',
   icon,
@@ -55,20 +58,27 @@ export function Button({
   label,
   tooltip,
   disabled,
+  busy,
+  submitForm,
   onClick,
 }: ButtonProps) {
   const iconOnly = children === undefined || children === null
   return (
     <WithHelpTag text={tooltip ?? (iconOnly ? label : undefined)}>
       <parts.PushButton
+        data-testid={testId}
         size={size}
         tint={tintOf[variant]}
-        icon={icon && glyph(icon)}
+        icon={busy ? undefined : icon && glyph(icon)}
         aria-label={iconOnly ? label : undefined}
-        disabled={disabled}
+        aria-busy={busy || undefined}
+        disabled={disabled || busy}
+        type={submitForm ? 'submit' : 'button'}
+        form={submitForm}
         onClick={onClick}
         data-icon-only={iconOnly ? '' : undefined}
       >
+        {busy && <Spinner size={size === 'small' ? 12 : size === 'medium' ? 14 : 16} />}
         {children}
       </parts.PushButton>
     </WithHelpTag>

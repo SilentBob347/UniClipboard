@@ -6,6 +6,12 @@ import type { TextProps } from '@/ui-kit/contract'
 // Caption, so the two smallest roles share it.
 const useStyles = makeStyles({
   base: { minWidth: 0 },
+  // WinUI Title (28/36 semibold): text read and copied by hand, e.g. an invitation code.
+  large: {
+    fontSize: tokens.fontSizeHero700,
+    lineHeight: tokens.lineHeightHero700,
+    fontWeight: tokens.fontWeightSemibold,
+  },
   title: {
     fontSize: tokens.fontSizeBase500,
     lineHeight: tokens.lineHeightBase500,
@@ -39,6 +45,7 @@ export function Text({
   tone = 'primary',
   emphasized,
   monospace,
+  large,
   truncate,
   children,
 }: TextProps) {
@@ -48,6 +55,7 @@ export function Text({
       className={mergeClasses(
         styles.base,
         styles[role],
+        large && styles.large,
         styles[tone],
         emphasized && styles.emphasized,
         monospace && styles.mono,

@@ -1215,9 +1215,9 @@
 }
 
 .mac-alert {
-  /* content-box, as in the design: the padding adds to the stated width. */
-  box-sizing: content-box;
-  width: 280px;
+  box-sizing: border-box;
+  width: 19.75rem;
+  max-width: calc(100% - 2rem);
   padding: 20px 18px 16px;
   border-radius: 26px;
   background: var(--glass-tinted);
@@ -1285,7 +1285,7 @@
 }
 
 .mac-alert-actions .mac-btn {
-  width: 244px;
+  width: 100%;
 }
 
 .mac-tooltip {
@@ -1644,6 +1644,11 @@
 
 .mac-root[data-native-material] {
   background: transparent;
+}
+
+/* Entry pages extend behind the transparent title bar and share one solid window background. */
+.mac-root:has(.mac-entry) {
+  background: var(--window);
 }
 
 /* With a native window material the page has no opaque backdrop: backdrop-filter in WKWebView only
@@ -2948,6 +2953,12 @@
 }
 
 .mac-sheet-header .mac-sheet-title {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.mac-sheet-header > .mac-text,
+.mac-sheet-header > .mac-popup-btn {
   flex-shrink: 0;
   white-space: nowrap;
 }

@@ -95,6 +95,7 @@ export function Text({
   tone = 'primary',
   emphasized,
   monospace,
+  large,
   truncate,
   children,
 }: TextProps) {
@@ -105,6 +106,7 @@ export function Text({
       data-tone={tone}
       data-emphasized={emphasized ? '' : undefined}
       data-mono={monospace ? '' : undefined}
+      data-large={large ? '' : undefined}
       data-truncate={truncate ? '' : undefined}
     >
       {children}
