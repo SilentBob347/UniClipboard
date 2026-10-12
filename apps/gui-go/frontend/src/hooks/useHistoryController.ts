@@ -250,6 +250,8 @@ export function useHistoryController() {
     })
   }, [])
   const clearChecked = useCallback(() => setCheckedState(new Set()), [])
+  /** Replaces the checked rows, for lists that select ranges or every row at once. */
+  const setChecked = useCallback((ids: readonly string[]) => setCheckedState(new Set(ids)), [])
   const checkedItems = useMemo(
     () => orderedItems.filter(item => checkedIds.has(item.id)),
     [orderedItems, checkedIds]
@@ -498,6 +500,8 @@ export function useHistoryController() {
     mergeTagsInto,
     deleteTags,
     browseCount: data.browseCount,
+    queryFailure: data.queryFailure,
+    retryQuery: data.refetch,
     indexState: data.indexState,
     isSearchActive: data.isSearchActive,
     searchLoading: data.searchLoading,
@@ -522,6 +526,7 @@ export function useHistoryController() {
     checkedItems,
     toggleChecked,
     clearChecked,
+    setChecked,
     pinChecked,
     deleteChecked,
 

@@ -11,14 +11,16 @@ import {
 // E2E-only scenario driver. It runs inside the real Wails WebView, interacts
 // with the shared React DOM and reports each assertion to the native test
 // service. It is bundled only when VITE_GUI_GO_E2E=1.
-import { Call, Events } from '@wailsio/runtime'
+import { Call, Events, Window } from '@wailsio/runtime'
 import { daemonClient } from '@/api/daemon/client'
 import { updateSettings } from '@/api/daemon/settings'
 import { setQuickPanelEnabled, setQuickPanelPosition } from '@/api/tauri-command/settings'
 import { isPermissionGranted, requestPermission, sendNotification } from '@/host/notification'
+import { subscribeWindowMaterial } from '@/host/window-material'
 import i18n from '@/i18n'
 import { daemonWs } from '@/lib/daemon-ws'
 import { commands } from '@/lib/ipc'
+import { setUiScale } from '@/lib/ui-scale'
 import { isExpectedCommandError } from '@/observability/errors'
 
 const windowName = 'main'
@@ -65,11 +67,35 @@ function fill(selector: string, value: string) {
 }
 
 const link = (href: string) => $(`a[href="${href}"]`)
+// The History page built on `@/ui-kit` (macOS builds) navigates with sidebar buttons, not links.
+const kitNavLabels: Record<string, string> = {
+  '/settings': 'history.kit.settings',
+  '/devices': 'history.kit.pairDevice',
+}
+const navControl = (href: string) =>
+  link(href) ??
+  // The row text may end with a shortcut hint (`Settings… ⌘,`).
+  Array.from(document.querySelectorAll<HTMLElement>('nav button')).find(
+    button =>
+      kitNavLabels[href] && button.textContent?.trim().startsWith(i18n.t(kitNavLabels[href]))
+  ) ??
+  null
 const devicesPage = () => $('[data-testid="devices-add-device"]')
+// History rows of either page: the existing cards, or the `@/ui-kit` list's options.
+const ROW_SELECTOR = '[data-testid="history-card"], [role="option"][data-item-id]'
+const historyRows = () => Array.from(document.querySelectorAll<HTMLElement>(ROW_SELECTOR))
+const historyRow = (id: string) =>
+  $(`[data-testid="history-card"][data-entry-id="${id}"], [role="option"][data-item-id="${id}"]`)
+// Opens a row the way a pointer does on that page.
+function openRow(row: HTMLElement) {
+  const button = row.dataset.testid === 'history-card' ? row.querySelector('button') : null
+  if (button) button.click()
+  else row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+}
 // The history route with the sidebar shell: independent of list content and locale.
 const mainLayout = () =>
   location.pathname.startsWith('/history') &&
-  link('/settings') &&
+  navControl('/settings') &&
   !$('[data-testid="setup-entry-create"]') &&
   !$('#unlock-passphrase') &&
   !$('[data-testid="unlock-content"]')
@@ -107,9 +133,11 @@ async function run() {
   if (phase === 'unlock-wrong') return runUnlockWrongScenario()
   if (phase === 'unlock-restart') return runUnlockRestartScenario()
   if (phase === 'history-live') return runHistoryLiveScenario()
+  if (phase === 'history-kit') return runHistoryKitScenario()
   if (phase === 'single-image-ui') return runSingleImageUiScenario()
   if (phase === 'scheduler') return runSchedulerScenario()
   if (phase === 'wake') return // the orchestrator drives this launch through the control file
+  if (phase === 'external') return // an external CDP driver owns this launch; the default scenario would race it
   if (phase === 'quick-panel-settings') return runQuickPanelSettingsScenario()
   if (phase === 'native-panel') return runNativePanelScenario()
   if (phase === 'file-ops') return runFileOpsScenario()
@@ -185,7 +213,7 @@ async function run() {
   await waitFor('home', mainLayout)
   await record('home', true)
   const click = (href: string) => () =>
-    void waitFor(`link ${href}`, () => link(href)).then(a => a.click())
+    void waitFor(`link ${href}`, () => navControl(href)).then(a => a.click())
   // At this window width the shared layout shows devices as a panel of the history route.
   await navigate(click('/devices'), '/', devicesPage, 'devices', true)
   const beforeSettings = location.pathname
@@ -207,7 +235,7 @@ async function run() {
   await control('reopen-main')
   // The WebView survived the hide/show cycle with its React state and host bindings intact.
   const alive = await settle(HostService.GetDeviceMeta())
-  await record('webview-alive-after-reopen', alive.status === 'ok' && !!link('/settings'))
+  await record('webview-alive-after-reopen', alive.status === 'ok' && !!navControl('/settings'))
   // Second windows: the real updater (dev preview) and quick panel pages.
   await control('open-updater')
   await sleep(3000)
@@ -360,7 +388,9 @@ async function runUnlockWrongScenario() {
   await record('right-passphrase-unlocked', (await contentUnlocked()) === true)
   await waitFor('content-lock-changed event', () => lockEvents > 0)
   offLock()
-  await record('content-lock-changed-event', lockEvents > 0, { events: lockEvents })
+  await record('content-lock-changed-event', lockEvents > 0, {
+    events: lockEvents,
+  })
   await sleep(1500)
   await control('exit')
 }
@@ -445,8 +475,7 @@ async function runUnlockRestartScenario() {
 async function runHistoryLiveScenario() {
   const marker = String(await Call.ByName('main.EvidenceService.Secret'))
   await reachMainLayout()
-  const cards = () =>
-    Array.from(document.querySelectorAll<HTMLElement>('[data-testid="history-card"]'))
+  const cards = historyRows
   const withMarker = () => cards().find(card => card.textContent?.includes(marker))
   // Every raw frame the socket delivers after arming, whatever the topic, so the evidence names what drove the update.
   const socket = daemonWs as unknown as {
@@ -470,7 +499,7 @@ async function runHistoryLiveScenario() {
   const loadId = Math.random().toString(36).slice(2)
   ;(window as unknown as { __e2eLoadId: string }).__e2eLoadId = loadId
   const route = location.pathname
-  await waitFor('history list rendered', () => $('[data-testid="history-card"]')) // the orchestrator seeds one entry
+  await waitFor('history list rendered', () => $(ROW_SELECTOR)) // the orchestrator seeds one entry
   await sleep(1500) // let the initial fetch settle before arming
   armed = true // before the step is reported: the orchestrator injects the entry once it sees the step
   await record('history-watch-armed', !withMarker(), {
@@ -506,6 +535,934 @@ async function runHistoryLiveScenario() {
 // system clipboard (the daemon sends one entry per file and rejects directories), which isolated runs disable.
 // So this scenario pins down the boundary instead of faking a consumer: the single image decodes in the DOM and
 // no `/host-file` request was made for it.
+// The History page built on `@/ui-kit` (macOS builds) against the real daemon of an isolated profile.
+// The orchestrator (e2e/history_kit_ui_run.py) seeds synthetic entries and passes their texts as the
+// secret; `shot:<name>` steps ask it to capture the window, so the driver pauses after each.
+async function runHistoryKitScenario() {
+  const seeded = JSON.parse(String(await Call.ByName('main.EvidenceService.Secret'))) as {
+    code: string
+    link: string
+    texts: string[]
+    image: { dimensions: string }
+    zoom: boolean
+    shotPauseMs: number
+  }
+  const shot = async (name: string, detail?: unknown) => {
+    await record(`shot:${name}`, true, detail)
+    await sleep(seeded.shotPauseMs)
+  }
+  // Shortcut hooks match the physical key (`code`), so letters carry it too.
+  const key = (target: EventTarget, name: string, init: KeyboardEventInit = {}) =>
+    target.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: name,
+        code: /^[a-z]$/i.test(name) ? `Key${name.toUpperCase()}` : name,
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      })
+    )
+  // The app theme changes the way a user changes it: Settings > Appearance, then back to History.
+  const setTheme = async (theme: 'light' | 'dark' | 'system') => {
+    navControl('/settings')!.click()
+    await waitFor('settings page', () => $('[data-testid="settings-page-header"]'))
+    const appearance = await waitFor('appearance category', () =>
+      Array.from(document.querySelectorAll<HTMLElement>('button')).find(
+        b => b.textContent?.trim() === i18n.t('settings.categories.appearance')
+      )
+    )
+    appearance.click()
+    const radio = await waitFor('theme choice', () =>
+      $(`input[name="appearance-theme"][value="${theme}"]`)
+    )
+    radio.click()
+    await waitFor('theme saved', () => (radio as HTMLInputElement).checked)
+    history.back()
+    await waitFor(
+      'history again',
+      () => location.pathname.startsWith('/history') && $('[data-ui-skin]')
+    )
+  }
+  const appliedScheme = () =>
+    document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+  const materials = () => ({
+    hostReported: hostMaterial,
+    document: document.documentElement.dataset.windowMaterial ?? null,
+    sidebar: $('[data-surface="sidebar"]')?.dataset.windowMaterial ?? null,
+    content: $('[data-surface="content"]')?.dataset.windowMaterial ?? null,
+    appScheme: appliedScheme(),
+    systemScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+  })
+  let hostMaterial = 'unread'
+  subscribeWindowMaterial(material => {
+    hostMaterial = material
+  })
+  const rowTitles = () => historyRows().map(row => row.getAttribute('aria-label') ?? '')
+  const selected = () => historyRows().filter(row => row.getAttribute('aria-selected') === 'true')
+  // Every role attribute in the rendered page must be a WAI-ARIA 1.2 role: a component prop named
+  // like an ARIA attribute (Text's type-ramp `role`) must never reach the DOM.
+  const ARIA_ROLES = new Set(
+    (
+      'alert alertdialog application article banner blockquote button caption cell checkbox code ' +
+      'columnheader combobox comment complementary contentinfo definition deletion dialog document ' +
+      'emphasis feed figure form generic grid gridcell group heading img insertion link list ' +
+      'listbox listitem log main mark marquee math menu menubar menuitem menuitemcheckbox ' +
+      'menuitemradio meter navigation none note option paragraph presentation progressbar radio ' +
+      'radiogroup region row rowgroup rowheader scrollbar search searchbox separator slider ' +
+      'spinbutton status strong subscript suggestion superscript switch tab table tablist tabpanel ' +
+      'term textbox time timer toolbar tooltip tree treegrid treeitem'
+    ).split(' ')
+  )
+  const ariaRoles = () => {
+    const found = Array.from(document.querySelectorAll('[role]'))
+    const invalid = found
+      .filter(el => (el.getAttribute('role') ?? '').split(/\s+/).some(r => !ARIA_ROLES.has(r)))
+      .map(el => `${el.tagName.toLowerCase()}[role=${el.getAttribute('role')}]`)
+    return { checked: found.length, invalid }
+  }
+  const recordAriaRoles = async (state: string) => {
+    const audit = ariaRoles()
+    await record(`kit-aria-roles-${state}`, audit.invalid.length === 0, audit)
+  }
+
+  // Every route change with its caller, so an unexpected navigation names its source.
+  const routes: string[] = []
+  for (const method of ['pushState', 'replaceState'] as const) {
+    const original = history[method].bind(history)
+    history[method] = (data: unknown, unused: string, url?: string | URL | null) => {
+      routes.push(
+        `${method} ${String(url)} ${new Error().stack?.split('\n').slice(2, 6).join(' < ')}`
+      )
+      original(data, unused, url)
+    }
+  }
+  window.addEventListener('popstate', () => routes.push(`popstate ${location.pathname}`))
+  const list = () => {
+    const found = $('[role="listbox"][aria-multiselectable]')
+    if (!found)
+      throw new Error(
+        `history list missing at ${location.pathname}: ${routes.slice(-6).join(' | ')}`
+      )
+    return found
+  }
+  await reachMainLayout()
+  const root = await waitFor('ui kit page', () => $('[data-ui-skin]'))
+  // First launch (design MA1): the profile has no history yet, so the list shows the getting-started
+  // steps and the detail explains where items come from. The orchestrator seeds entries after this.
+  const steps = await waitFor('getting started', () =>
+    $(`ol[aria-label="${i18n.t('history.kit.gettingStarted')}"]`)
+  )
+  await record(
+    'kit-first-launch',
+    steps.querySelectorAll('li').length === 3 &&
+      !!document.body.textContent?.includes(i18n.t('history.kit.nothingCopied')),
+    { steps: Array.from(steps.querySelectorAll('li')).map(li => li.textContent?.slice(0, 60)) }
+  )
+  await shot('first-launch')
+  await record('kit-ready-for-entries', true)
+  // Entries sent from this profile's CLI are not always pushed to the page (see
+  // history_live_run.py), so wait for the daemon to hold them, then reload the list the way a user
+  // would: Pinned, then All Items.
+  const end = Date.now() + 120000
+  for (;;) {
+    const listed = await daemonClient.request<{ data: Array<{ id: string }> }>(
+      '/clipboard/entries?limit=50&offset=0'
+    )
+    if (listed.data.length >= 5) break
+    if (Date.now() > end) throw new Error(`timeout: seeded entries (${listed.data.length})`)
+    await sleep(1000)
+  }
+  const sidebarRow = (label: string) =>
+    Array.from(document.querySelectorAll<HTMLElement>('nav button')).find(b =>
+      b.textContent?.trim().startsWith(label)
+    )
+  sidebarRow(i18n.t('history.sidebar.pinned'))?.click()
+  await sleep(500)
+  sidebarRow(i18n.t('history.sidebar.allItems'))?.click()
+  await record('kit-page-mounted', root.dataset.uiSkin === 'macos', {
+    skin: root.dataset.uiSkin,
+  })
+  // Command-F before Settings was ever opened (page shortcut scope on a fresh page).
+  await waitFor('list before probe', () => $('[role="listbox"][aria-multiselectable]'))
+  key(list(), 'f', { metaKey: true })
+  await sleep(300)
+  await record(
+    'kit-search-shortcut-fresh',
+    document.activeElement?.getAttribute('type') === 'search',
+    {
+      active: document.activeElement?.tagName,
+    }
+  )
+
+  // Following the system appearance, the window material shows behind the sidebar.
+  const systemScheme = () => (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+  await setTheme('system')
+  await waitFor('system theme applied', () => appliedScheme() === systemScheme())
+  const expected = [seeded.code, seeded.link, ...seeded.texts]
+  const geometry = () => {
+    const box = (selector: string) => {
+      const r = $(selector)?.getBoundingClientRect()
+      return r ? [Math.round(r.width), Math.round(r.height)] : null
+    }
+    return {
+      root: box('[data-ui-skin]'),
+      split: box('.mac-split'),
+      pane: box('[data-pane="list"]'),
+      list: box('.mac-glist'),
+      scroller: box('.mac-glist-scroller'),
+      options: document.querySelectorAll('[role="option"]').length,
+    }
+  }
+  await record('kit-geometry', true, geometry())
+  await waitFor(
+    'seeded rows',
+    () => expected.every(text => rowTitles().some(title => title.includes(text.split('\n')[0]))),
+    90000
+  )
+  await record('kit-rows', true, {
+    rows: rowTitles().length,
+    groups: document.querySelectorAll('.mac-glist-header, [role="presentation"]').length,
+  })
+  // The host's report decides the marker; a native marker without a host report would be a lie.
+  const initial = materials()
+  const native = hostMaterial !== 'none'
+  await record(
+    'kit-material',
+    initial.content === 'solid' &&
+      (native
+        ? initial.sidebar === `native-${hostMaterial}` &&
+          initial.document === `native-${hostMaterial}`
+        : initial.sidebar === 'css-fallback' && initial.document === null),
+    initial
+  )
+  await shot('system-default', materials())
+  await recordAriaRoles('detail')
+
+  // Keyboard: the list is one tab stop; Down moves the selection and the detail follows it.
+  list().focus()
+  const before = selected()[0]?.dataset.itemId
+  key(list(), 'ArrowDown')
+  await waitFor('selection moved', () => selected()[0]?.dataset.itemId !== before)
+  // Ids, not elements: the virtualized list reuses row elements for other entries.
+  const currentId = selected()[0].dataset.itemId!
+  await record('kit-keyboard-select', document.activeElement === list(), {
+    from: before,
+    to: currentId,
+    activeDescendant: list().getAttribute('aria-activedescendant'),
+  })
+
+  // Return copies the selected entry: the daemon's restore answers 200. The system clipboard is off
+  // in E2E, so nothing is read back from it.
+  const restores: Array<{ url: string; status: number }> = []
+  const fetchBeforeCopy = window.fetch
+  window.fetch = async (input, init) => {
+    const response = await fetchBeforeCopy(input, init)
+    // The path only: the query carries the session token.
+    const url = new URL(String(input instanceof Request ? input.url : input), location.href)
+      .pathname
+    if (url.includes('/clipboard/restore/')) restores.push({ url, status: response.status })
+    return response
+  }
+  key(list(), 'Enter')
+  const copied = i18n.t('clipboard.item.actions.copied')
+  await waitFor('copy feedback', () =>
+    Array.from(document.querySelectorAll('button')).some(b => b.textContent?.includes(copied))
+  )
+  window.fetch = fetchBeforeCopy
+  await record(
+    'kit-copy-restored',
+    restores.length === 1 &&
+      restores[0].status === 200 &&
+      restores[0].url.endsWith(`/clipboard/restore/${currentId}`),
+    { entry: currentId, restores, systemClipboardReadBack: 'not run (disabled in E2E)' }
+  )
+
+  // Command-F (page shortcut scope) focuses the search field.
+  key(list(), 'f', { metaKey: true })
+  await sleep(300)
+  await record('kit-search-shortcut', document.activeElement?.getAttribute('type') === 'search', {
+    active: document.activeElement?.tagName,
+  })
+  // Command-comma opens Settings from anywhere (global shortcut scope).
+  key(list(), ',', { metaKey: true, code: 'Comma' })
+  await sleep(500)
+  const globalShortcut = location.pathname.startsWith('/settings')
+  await record('kit-settings-shortcut', globalShortcut, { opened: location.pathname })
+  if (globalShortcut) {
+    history.back()
+    await waitFor(
+      'history after probe',
+      () => location.pathname.startsWith('/history') && $('[data-ui-skin]')
+    )
+    await waitFor('rows after probe', () => historyRows().length > 0, 15000).catch(error => {
+      const scroller = $('.mac-glist-scroller')
+      const inner = scroller?.firstElementChild as HTMLElement | null
+      throw new Error(
+        `${String(error)} ${JSON.stringify({
+          ...geometry(),
+          scrollerChildren: scroller?.children.length,
+          innerHeight: inner?.getBoundingClientRect().height,
+          innerHtml: scroller?.innerHTML.slice(0, 400),
+        })}`
+      )
+    })
+  }
+  list().focus()
+
+  // Pin from the toolbar, then unpin with Command-P: the row's pin mark and the daemon's flag follow.
+  const pinnedId = currentId
+  const favorited = async () => {
+    const response = await daemonClient.request<{
+      data: Array<{ id: string; is_favorited?: boolean; isFavorited?: boolean }>
+    }>('/clipboard/entries?limit=50&offset=0')
+    const found = response.data.find(e => e.id === pinnedId)
+    return Boolean(found?.is_favorited ?? found?.isFavorited)
+  }
+  const pinMark = () => !!historyRow(pinnedId)?.querySelector('[data-tone="highlight"]')
+  const pinLabel = i18n.t('history.detail.pin')
+  const toolbarPin = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="toolbar"] button')
+  ).find(b => b.getAttribute('aria-label') === pinLabel)
+  toolbarPin?.click()
+  const pinnedByButton = await waitFor('pin mark', pinMark, 10000).catch(() => false)
+  await record('kit-pin-toolbar', Boolean(pinnedByButton) && (await favorited()), {
+    entry: pinnedId,
+    button: Boolean(toolbarPin),
+    mark: pinMark(),
+  })
+  list().focus()
+  key(list(), 'p', { metaKey: true })
+  const unpinned = await waitFor('pin mark gone', () => !pinMark(), 10000).catch(() => false)
+  await record('kit-unpin-shortcut', Boolean(unpinned) && !(await favorited()), {
+    entry: pinnedId,
+    mark: pinMark(),
+    active: document.activeElement?.getAttribute('role'),
+  })
+
+  // T opens the tag field of the selected item; a new name is created and attached (design MC1).
+  const tagName = `kit${Date.now() % 100000}`
+  key(list(), 't', { code: 'KeyT' })
+  const tagField = (await waitFor('tag field', () =>
+    $(`input[role="combobox"][aria-label="${i18n.t('history.tags.inputLabel')}"]`)
+  )) as HTMLInputElement
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  valueSetter.call(tagField, tagName)
+  tagField.dispatchEvent(new Event('input', { bubbles: true }))
+  await waitFor('create suggestion', () =>
+    Array.from(document.querySelectorAll('[role="option"]')).some(o =>
+      o.textContent?.includes(tagName)
+    )
+  )
+  await shot('tag-field')
+  // Evidence by stage, so a missing chip names where it stopped: which entry the list and the
+  // detail show around Enter, and the tag requests with their timing (paths only, no bodies).
+  const tagRequests: Array<{ method: string; path: string; status?: number; ms: number[] }> = []
+  const fetchBeforeTag = window.fetch
+  const tagStart = performance.now()
+  window.fetch = async (input, init) => {
+    const path = new URL(String(input instanceof Request ? input.url : input), location.href)
+      .pathname
+    const entry = {
+      method: init?.method ?? (input instanceof Request ? input.method : 'GET'),
+      path,
+      ms: [Math.round(performance.now() - tagStart)],
+    } as (typeof tagRequests)[number]
+    if (/tag|search\/query/.test(path)) tagRequests.push(entry)
+    const response = await fetchBeforeTag(input, init)
+    entry.status = response.status
+    entry.ms.push(Math.round(performance.now() - tagStart))
+    return response
+  }
+  const stage = () => {
+    const detail = $('[data-testid="clipboard-detail"]')
+    return {
+      listSelected: selected().map(row => row.dataset.itemId),
+      detailEntry: detail?.dataset.entryId ?? null,
+      detailChips: Array.from(detail?.querySelectorAll('.mac-tag') ?? []).map(c => c.textContent),
+      tagGroup: !!detail?.querySelector('[role="group"]'),
+      tagTotal: $('nav')?.textContent?.match(/· (\d+)/)?.[1] ?? null,
+    }
+  }
+  const beforeEnter = stage()
+  key(tagField, 'Enter')
+  const chipText = `#${tagName}`
+  const chipShown = await waitFor(
+    'tag chip in the detail',
+    () =>
+      Array.from(document.querySelectorAll('[data-testid="clipboard-detail"] .mac-tag')).some(c =>
+        c.textContent?.includes(chipText)
+      ),
+    30000
+  ).then(
+    () => true,
+    () => false
+  )
+  window.fetch = fetchBeforeTag
+  await record('kit-tag-created', chipShown, {
+    tag: chipText,
+    beforeEnter,
+    after: stage(),
+    requests: tagRequests,
+  })
+  if (!chipShown) throw new Error('timeout: tag chip in the detail (see kit-tag-created)')
+
+  // Command-click adds a second row: the detail becomes the selection summary.
+  const other = historyRows().find(row => row.dataset.itemId !== pinnedId)!
+  other.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, metaKey: true }))
+  await waitFor(
+    'two selected',
+    () => selected().length === 2 && $('[data-testid="clipboard-selection"]')
+  )
+  await record('kit-multi-select', true, {
+    selected: selected().map(r => r.dataset.itemId),
+  })
+  // The new tag is on one of the two: striped "1 of 2"; clicking it adds it to both (design MC2).
+  const partialTag = await waitFor(
+    'partial tag',
+    () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="clipboard-selection"] .mac-tag[data-partial]'
+        )
+      ).find(c => c.textContent?.includes(chipText)),
+    30000
+  )
+  await shot('multi-select')
+  await recordAriaRoles('selection')
+  partialTag.querySelector<HTMLElement>('button')!.click()
+  await waitFor(
+    'tag on all',
+    () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="clipboard-selection"] .mac-tag')
+      ).some(c => c.textContent?.includes(chipText) && !c.hasAttribute('data-partial')),
+    30000
+  )
+  await record('kit-tag-added-to-all', true, { tag: chipText })
+
+  // Manage Tags (design MC3): the sheet's table lists the tag; its row menu renames it and the
+  // switch puts it in the sidebar.
+  const manage = Array.from(document.querySelectorAll<HTMLElement>('nav button')).find(
+    b => b.getAttribute('aria-label') === i18n.t('history.tags.manage')
+  )!
+  manage.click()
+  const sheetRow = await waitFor('tag in the manager', () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"] [role="row"]')).find(r =>
+      r.textContent?.includes(chipText)
+    )
+  )
+  const cell = sheetRow.querySelector<HTMLElement>('[role="gridcell"]')!
+  const box = cell.getBoundingClientRect()
+  const at = { bubbles: true, cancelable: true, clientX: box.x + 20, clientY: box.y + 10 }
+  cell.dispatchEvent(new MouseEvent('mousedown', { ...at, button: 2 }))
+  cell.dispatchEvent(new MouseEvent('contextmenu', { ...at, button: 2 }))
+  const renameItem = await waitFor('rename item', () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+      i => i.textContent?.trim() === i18n.t('history.tags.rename')
+    )
+  )
+  await record('kit-tag-manager-menu', true, {
+    items: Array.from(document.querySelectorAll('[role="menuitem"]')).map(i =>
+      i.textContent?.trim()
+    ),
+  })
+  // Over the host's native material a menu must hide what is under it: its own background is
+  // nearly opaque (measured in the real WebView while the host reports native glass).
+  const menuElement = renameItem.closest<HTMLElement>('[role="menu"]')
+  const menuBackground = menuElement ? getComputedStyle(menuElement).backgroundColor : null
+  // rgb() is opaque, rgba() carries alpha; anything else (or no menu) fails the step.
+  const menuAlpha = (() => {
+    const rgba = menuBackground?.match(/^rgba\(([^)]+)\)$/)
+    if (rgba) {
+      const parts = rgba[1].split(',').map(Number)
+      return parts.length === 4 ? parts[3] : null
+    }
+    return menuBackground && /^rgb\([^)]+\)$/.test(menuBackground) ? 1 : null
+  })()
+  const menuMaterial = document.documentElement.dataset.windowMaterial ?? null
+  await record(
+    'kit-native-menu-opaque',
+    hostMaterial === 'none' ||
+      (menuMaterial?.startsWith('native') === true && menuAlpha !== null && menuAlpha >= 0.9),
+    {
+      hostReported: hostMaterial,
+      document: menuMaterial,
+      menuClass: menuElement?.className ?? null,
+      background: menuBackground,
+      alpha: menuAlpha,
+    }
+  )
+  await shot('tag-manager-menu')
+  renameItem.click()
+  const renameField = (await waitFor('rename field', () =>
+    $('[role="dialog"] input[aria-invalid], [role="dialog"] .mac-field')
+  )) as HTMLInputElement
+  const renamed = `${tagName}r`
+  valueSetter.call(renameField, renamed)
+  renameField.dispatchEvent(new Event('input', { bubbles: true }))
+  key(renameField, 'Enter')
+  const renamedRow = await waitFor(
+    'renamed tag',
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"] [role="row"]')).find(r =>
+        r.textContent?.includes(`#${renamed}`)
+      ),
+    30000
+  )
+  renamedRow.querySelector<HTMLElement>('[role="switch"]')!.click()
+  await waitFor(
+    'tag in the sidebar',
+    () =>
+      Array.from(document.querySelectorAll('nav button')).some(b =>
+        b.textContent?.includes(`#${renamed}`)
+      ),
+    30000
+  )
+  await record('kit-tag-manager-rename-sidebar', true, { tag: `#${renamed}` })
+  await shot('tag-manager')
+  await recordAriaRoles('tag-manager')
+  Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"] button'))
+    .find(b => b.textContent?.trim() === i18n.t('history.composite.done'))!
+    .click()
+  await waitFor('manager closed', () => !$('[role="dialog"]'))
+  list().focus()
+
+  // Delete asks first; focus starts on Cancel, Escape keeps everything.
+  const countBefore = historyRows().length
+  key(list(), 'Backspace')
+  const alert = await waitFor('delete alert', () => $('[role="alertdialog"]'))
+  await waitFor(
+    'cancel focused',
+    () => document.activeElement?.textContent?.trim() === i18n.t('clipboard.cancelLabel')
+  )
+  await record('kit-delete-alert', true, {
+    focused: document.activeElement?.textContent?.trim(),
+  })
+  await shot('delete-alert')
+  key(document.activeElement ?? alert, 'Escape')
+  await waitFor('alert closed', () => !$('[role="alertdialog"]'))
+  await sleep(500)
+  await record('kit-selection-after-escape', selected().length === 2, {
+    selected: selected().map(r => r.dataset.itemId),
+  })
+  await record('kit-delete-cancelled', historyRows().length === countBefore, {
+    rows: historyRows().length,
+  })
+
+  // Confirming deletes both selected entries for good.
+  const doomed = selected().map(row => row.dataset.itemId!)
+  list().focus()
+  key(list(), 'Backspace')
+  await waitFor('delete alert again', () => $('[role="alertdialog"]'))
+  const confirm = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="alertdialog"] button')
+  ).find(b => b.textContent?.trim() === i18n.t('clipboard.deleteLabel'))!
+  confirm.click()
+  await waitFor('rows deleted', () => doomed.every(id => !historyRow(id)), 30000).catch(
+    async error => {
+      const left = await daemonClient.request<{ data: Array<{ id: string }> }>(
+        '/clipboard/entries?limit=50&offset=0'
+      )
+      throw new Error(
+        `${String(error)}; doomed ${doomed.join(',')}; daemon has ${left.data.map(e => e.id).join(',')}`
+      )
+    }
+  )
+  const remaining = await daemonClient.request<{ data: Array<{ id: string }> }>(
+    '/clipboard/entries?limit=50&offset=0'
+  )
+  await record(
+    'kit-delete-confirmed',
+    doomed.every(id => !remaining.data.some(e => e.id === id)),
+    { deleted: doomed }
+  )
+
+  // Hide and show the sidebar with its toolbar control.
+  const toggle = () => $('[aria-expanded][aria-label]:is(.mac-split-toggle)')
+  toggle()!.click()
+  await waitFor('sidebar hidden', () => $('[data-sidebar-hidden]'))
+  await shot('sidebar-hidden')
+  toggle()!.click()
+  await waitFor('sidebar shown', () => !$('[data-sidebar-hidden]'))
+  await record('kit-sidebar-toggle', true)
+
+  // Grid layout (design ME2): cards in day groups; double click opens the detail as an inspector,
+  // Option-Command-I closes it again.
+  const viewRadio = (value: 'grid' | 'list') =>
+    $(
+      `[role="radio"][aria-label="${i18n.t(value === 'grid' ? 'history.kit.viewGrid' : 'history.kit.viewList')}"]`
+    )
+  viewRadio('grid')!.click()
+  const firstCard = await waitFor('grid cards', () => $('.mac-card[data-item-id]'))
+  await record('kit-grid', !$('[data-testid="clipboard-detail"]'), {
+    cards: document.querySelectorAll('.mac-card[data-item-id]').length,
+  })
+  firstCard.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+  firstCard.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+  await waitFor('inspector', () => $('[data-testid="clipboard-detail"]'))
+  await shot('grid-inspector')
+  key(document.body, 'i', { altKey: true, metaKey: true, code: 'KeyI' })
+  await waitFor('inspector closed', () => !$('[data-testid="clipboard-detail"]'))
+  await record('kit-grid-inspector', true)
+  // "Tag…" from the context menu of a card outside the selection, with the inspector closed, acts
+  // on that card: it becomes the selection and the inspector opens on its tag field.
+  const cards = () => Array.from(document.querySelectorAll<HTMLElement>('.mac-card[data-item-id]'))
+  const otherCard = cards().find(card => card.dataset.itemId !== firstCard.dataset.itemId)!
+  const otherId = otherCard.dataset.itemId!
+  const cardBox = otherCard.getBoundingClientRect()
+  const cardPoint = {
+    bubbles: true,
+    cancelable: true,
+    clientX: cardBox.x + 20,
+    clientY: cardBox.y + 20,
+    button: 2,
+  }
+  otherCard.dispatchEvent(new MouseEvent('contextmenu', cardPoint))
+  const tagItem = await waitFor('Tag… item', () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item =>
+      item.textContent?.trim().startsWith(i18n.t('history.tags.tagEllipsis'))
+    )
+  )
+  tagItem.click()
+  await waitFor(
+    'tag field for the right-clicked card',
+    () =>
+      $(`[data-testid="clipboard-detail"][data-entry-id="${otherId}"]`) &&
+      $(`input[role="combobox"][aria-label="${i18n.t('history.tags.inputLabel')}"]`)
+  )
+  await record('kit-grid-context-tag', true, { entry: otherId })
+  key(document.activeElement ?? document.body, 'Escape')
+  key(document.body, 'i', { altKey: true, metaKey: true, code: 'KeyI' })
+  await waitFor('inspector closed again', () => !$('[data-testid="clipboard-detail"]'))
+  viewRadio('list')!.click()
+  await waitFor(
+    'list again',
+    () => $('[role="option"][data-item-id]') && $('[data-testid="clipboard-detail"]')
+  )
+
+  // Narrowest window (the host's minimum size), then the same at 150% interface scale: nothing
+  // spills out of the page, the toolbar and the action bar keep their commands on screen, the list
+  // keeps keyboard focus, and the keyboard reaches the last row with the selection in view.
+  const layoutCheck = () => {
+    // What is on screen: the layout viewport, cut to the visual one (a magnified WKWebView keeps
+    // its layout width while showing only part of it).
+    const visible = {
+      width: Math.min(document.documentElement.clientWidth, visualViewport?.width ?? innerWidth),
+      height: Math.min(
+        document.documentElement.clientHeight,
+        visualViewport?.height ?? innerHeight
+      ),
+    }
+    const viewport = {
+      layout: [document.documentElement.clientWidth, document.documentElement.clientHeight],
+      visual: [
+        Math.round(visualViewport?.width ?? innerWidth),
+        Math.round(visualViewport?.height ?? innerHeight),
+      ],
+    }
+    const outside = (
+      selector: string,
+      bounds: DOMRect | { left: number; right: number; top: number; bottom: number }
+    ) =>
+      Array.from(document.querySelectorAll<HTMLElement>(selector))
+        .filter(el => el.offsetParent !== null)
+        .filter(el => {
+          const r = el.getBoundingClientRect()
+          return (
+            r.left < bounds.left - 0.5 ||
+            r.right > bounds.right + 0.5 ||
+            r.top < bounds.top - 0.5 ||
+            r.bottom > bounds.bottom + 0.5
+          )
+        })
+        .map(
+          el => el.getAttribute('aria-label') ?? el.textContent?.trim().slice(0, 24) ?? el.className
+        )
+    const screen = { left: 0, right: visible.width, top: 0, bottom: visible.height }
+    const bar = $('.mac-pane-actionbar')?.getBoundingClientRect()
+    return {
+      viewport,
+      scale: Math.round(devicePixelRatio * 100) / 100,
+      pageOverflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      toolbarOffscreen: outside(
+        '.mac-split-toolbar button, .mac-split-toolbar [role="radio"], .mac-split-toolbar input',
+        screen
+      ),
+      actionBarOffscreen: bar
+        ? [
+            ...outside('.mac-pane-actionbar > *:not(.mac-actionbar-hint)', bar),
+            ...outside('.mac-pane-actionbar', screen),
+          ]
+        : ['no action bar'],
+      panesOffscreen: outside('[data-pane]', screen),
+      panes: Array.from(document.querySelectorAll<HTMLElement>('[data-pane]')).map(pane => [
+        pane.dataset.pane,
+        Math.round(pane.getBoundingClientRect().width),
+      ]),
+    }
+  }
+  const layoutOk = (state: ReturnType<typeof layoutCheck>) =>
+    state.pageOverflowX <= 0 &&
+    state.toolbarOffscreen.length === 0 &&
+    state.actionBarOffscreen.length === 0 &&
+    state.panesOffscreen.length === 0 &&
+    state.panes.every(([, width]) => Number(width) > 0)
+  const reachLastRow = async () => {
+    list().focus()
+    key(list(), 'End')
+    const last = await waitFor('last row selected', () => {
+      const rows = historyRows()
+      const row = selected()[0]
+      return row && rows.length > 0 && row === rows[rows.length - 1] ? row : null
+    })
+    const scroller =
+      list().closest('.mac-glist')?.getBoundingClientRect() ?? list().getBoundingClientRect()
+    const r = last.getBoundingClientRect()
+    return {
+      focused: document.activeElement === list(),
+      inView: r.top >= scroller.top - 0.5 && r.bottom <= scroller.bottom + 0.5,
+    }
+  }
+  const originalSize = await Window.Size()
+  await Window.SetSize(900, 600)
+  await waitFor('narrow window', () => innerWidth <= 905)
+  await sleep(600)
+  const narrow = layoutCheck()
+  const narrowKeys = await reachLastRow()
+  await record('kit-narrow-window', layoutOk(narrow) && narrowKeys.focused && narrowKeys.inView, {
+    ...narrow,
+    ...narrowKeys,
+  })
+  await shot('narrow')
+  // The compact window hides the sidebar; its toolbar toggle still reaches it.
+  // Queried each time: the toggle moves into the sidebar's header when it opens.
+  const sidebarToggle = () => $('[aria-expanded][aria-label]:is(.mac-split-toggle)')!
+  sidebarToggle().click()
+  const drawer = await waitFor('sidebar in the compact window', () => {
+    const nav = $('[data-surface="sidebar"]')
+    const r = nav?.getBoundingClientRect()
+    return r && r.width > 100 && r.left >= -0.5 && r.right <= innerWidth + 0.5 ? r : null
+  })
+  const drawerLayout = layoutCheck()
+  await record('kit-narrow-sidebar', drawerLayout.pageOverflowX <= 0, {
+    sidebarWidth: Math.round(drawer.width),
+    ...drawerLayout,
+  })
+  await shot('narrow-sidebar')
+  sidebarToggle().click()
+  await waitFor('sidebar hidden again', () => $('[data-sidebar-hidden]'))
+  // Interface scale (Settings > Appearance) at the narrowest window: off by default, because the
+  // macOS host magnifies the WKWebView without relaying out (see history_kit_ui_run.py --zoom).
+  if (seeded.zoom) {
+    setUiScale(1.5)
+    await waitFor('150% scale', () => (visualViewport?.width ?? innerWidth) <= 905 / 1.4)
+    await sleep(600)
+    const zoomed = layoutCheck()
+    const zoomedKeys = await reachLastRow()
+    await record('kit-zoom-150', layoutOk(zoomed) && zoomedKeys.focused && zoomedKeys.inView, {
+      ...zoomed,
+      ...zoomedKeys,
+    })
+    await shot('narrow-zoom-150')
+    setUiScale(1)
+  }
+  await Window.SetSize(originalSize.width, originalSize.height)
+  await waitFor('window restored', () => innerWidth > 905)
+  list().focus()
+  key(list(), 'Home')
+  await sleep(300)
+
+  // Search (design MB1-MB3): text with match highlighting, a device token from the suggestions,
+  // then a search with no results and its widening choices.
+  const field = () => $('input[role="combobox"]') as HTMLInputElement
+  const typeInto = (text: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    setter.call(field(), text)
+    field().dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  // The oldest seeded text is never selected above, so it survives the deletes.
+  const word = seeded.texts[0].split(/\W+/).sort((a, b) => b.length - a.length)[0]
+  field().focus()
+  typeInto(word)
+  key(field(), 'Enter')
+  await waitFor(
+    'text results',
+    () => historyRows().length === 1 && $('[role="option"] mark')?.textContent === word,
+    30000
+  )
+  await record('kit-search-text', true, {
+    rows: rowTitles(),
+    mark: $('[role="option"] mark')?.textContent,
+  })
+  await shot('search-text')
+  // `#` lists the tags (the isolated profile has no paired device for `@`).
+  const suggestionOptions = () =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[role="listbox"]:not([aria-multiselectable]) [role="option"]'
+      )
+    )
+  typeInto('#')
+  await waitFor('tag suggestions', () => suggestionOptions().length > 0)
+  await record('kit-search-suggestions', field().getAttribute('aria-expanded') === 'true', {
+    options: suggestionOptions().map(o => o.textContent?.slice(0, 40)),
+    activeDescendant: field().getAttribute('aria-activedescendant'),
+  })
+  await shot('search-suggestions')
+  key(field(), 'ArrowDown')
+  key(field(), 'Enter')
+  await waitFor('tag token', () => $('.mac-token-search [data-kind="tag"]'))
+  await record('kit-search-token', true, {
+    token: $('.mac-token-search [data-kind="tag"]')?.textContent,
+  })
+  // No remaining entry carries the link tag: the empty state offers to drop the condition.
+  const empty = await waitFor('no results', () => $('[role="status"]'), 30000)
+  await waitFor('widening choices', () => empty.querySelectorAll('button').length > 0, 30000)
+  await record('kit-search-no-results', true, {
+    text: empty.textContent?.slice(0, 160),
+    choices: Array.from(empty.querySelectorAll('button')).map(b => b.textContent),
+  })
+  await shot('search-no-results')
+  const clear = Array.from(document.querySelectorAll<HTMLElement>('button')).find(
+    b => b.getAttribute('aria-label') === i18n.t('history.composite.clearAll')
+  )!
+  clear.click()
+  await waitFor('search cleared', () => historyRows().length >= 3, 30000)
+  await record(
+    'kit-search-cleared',
+    !($('input[role="combobox"]') as HTMLInputElement | null)?.value,
+    {
+      rows: historyRows().length,
+    }
+  )
+
+  // A failing list query is an error with Retry, not an empty history (fault injected in the page).
+  const realFetch = window.fetch
+  window.fetch = (input, init) =>
+    String(input instanceof Request ? input.url : input).includes('/search/query')
+      ? Promise.resolve(new Response('{"error":"injected"}', { status: 500 }))
+      : realFetch(input, init)
+  field().focus()
+  typeInto(word)
+  key(field(), 'Enter')
+  const failed = await waitFor(
+    'query failure state',
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[role="status"]')).find(el =>
+        el.textContent?.includes(i18n.t('history.kit.queryFailedTitle'))
+      ),
+    30000
+  )
+  // No count either: a failed query does not know how many items match.
+  const failureCount = {
+    subtitle: $('.mac-split-subtitle')?.textContent ?? null,
+    zeroResults:
+      $('[data-pane="list"]')?.textContent?.includes(
+        i18n.t('history.composite.results', { count: 0 })
+      ) ?? false,
+  }
+  await record(
+    'kit-query-failure',
+    historyRows().length === 0 && failureCount.subtitle === null && !failureCount.zeroResults,
+    { text: failed.textContent?.slice(0, 120), ...failureCount }
+  )
+  await shot('query-failure')
+  window.fetch = realFetch
+  Array.from(failed.querySelectorAll('button'))
+    .find(b => b.textContent === i18n.t('history.kit.retry'))!
+    .click()
+  await waitFor('rows after retry', () => historyRows().length === 1, 30000)
+  await record('kit-query-retry', true, { rows: rowTitles() })
+  Array.from(document.querySelectorAll<HTMLElement>('button'))
+    .find(b => b.getAttribute('aria-label') === i18n.t('history.composite.clearAll'))!
+    .click()
+  await waitFor('search cleared again', () => historyRows().length >= 3, 30000)
+
+  // An image entry (design ME1/ME4): the orchestrator uploads a synthetic PNG through a loopback
+  // mobile device of this profile. The detail shows it with Fit / 100%, its facts, and Quick Look.
+  await record('kit-ready-for-image', true)
+  const imageRow = async () => {
+    const thumb = $('[role="option"][data-item-id] [data-kind="image"]')
+    return thumb?.closest<HTMLElement>('[role="option"]') ?? null
+  }
+  const imageEnd = Date.now() + 120000
+  for (;;) {
+    if (await imageRow()) break
+    if (Date.now() > imageEnd) throw new Error('timeout: image entry')
+    // Uploads are not always pushed to the page either: reload the list as above.
+    sidebarRow(i18n.t('history.sidebar.pinned'))?.click()
+    await sleep(500)
+    sidebarRow(i18n.t('history.sidebar.allItems'))?.click()
+    await sleep(1500)
+  }
+  openRow((await imageRow())!)
+  const preview = await waitFor(
+    'image preview',
+    () => $('[data-testid="clipboard-detail"] .mac-preview[data-kind="image"] img'),
+    60000
+  )
+  const facts = () =>
+    $('[data-testid="clipboard-detail"]')?.textContent?.includes(seeded.image.dimensions) ?? false
+  await waitFor('image facts', facts, 30000)
+  const zoom = (label: string) =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="clipboard-detail"] [role="radio"]')
+    ).find(b => b.textContent === label)
+  await record('kit-image-detail', true, {
+    naturalWidth: (preview as HTMLImageElement).naturalWidth,
+    fit: zoom(i18n.t('history.detail.imageFit'))?.getAttribute('aria-checked'),
+  })
+  await shot('image-detail')
+  zoom(i18n.t('history.detail.imageActual'))!.click()
+  await waitFor(
+    '100% zoom',
+    () => zoom(i18n.t('history.detail.imageActual'))?.getAttribute('aria-checked') === 'true'
+  )
+  await record('kit-image-actual-size', true)
+  zoom(i18n.t('history.detail.imageFit'))!.click()
+  Array.from(document.querySelectorAll<HTMLElement>('[data-testid="clipboard-detail"] button'))
+    .find(b => b.textContent?.startsWith(i18n.t('history.detail.quickLook')))!
+    .click()
+  const quickLook = await waitFor('quick look', () => $('.mac-quicklook img'), 30000)
+  await waitFor('quick look decoded', () => (quickLook as HTMLImageElement).naturalWidth > 0)
+  await record('kit-quick-look', true, {
+    title: $('.mac-quicklook-title')?.textContent,
+  })
+  await shot('quick-look')
+  key(document.activeElement ?? document.body, 'Escape')
+  await waitFor('quick look closed', () => !$('.mac-quicklook'))
+  await record('kit-quick-look-closed', true)
+
+  // Light and dark themes: the material stays native only while the theme matches the system
+  // appearance; otherwise the sidebar shows its CSS fallback (the glass would be drawn in the wrong
+  // appearance, Wails sets NSAppearance only at window creation).
+  for (const theme of ['light', 'dark'] as const) {
+    await setTheme(theme)
+    await waitFor(`${theme} theme applied`, () => appliedScheme() === theme)
+    await sleep(500)
+    const state = materials()
+    // Without a host material (no private_mac_apis, or an opaque webview) the sidebar always
+    // falls back and the page stays opaque.
+    const expected =
+      hostMaterial !== 'none' && theme === systemScheme()
+        ? `native-${hostMaterial}`
+        : 'css-fallback'
+    await record(
+      `kit-material-${theme}`,
+      state.sidebar === expected &&
+        state.content === 'solid' &&
+        (expected === 'css-fallback' ? state.document === null : state.document === expected),
+      { ...state, expected }
+    )
+    await shot(`${theme}-default`, state)
+  }
+  await setTheme('system')
+
+  await record('history-kit-complete', true)
+  await sleep(1500)
+  await control('exit')
+}
+
 async function runSingleImageUiScenario() {
   const name = String(await Call.ByName('main.EvidenceService.Secret'))
   await reachMainLayout()
@@ -520,12 +1477,8 @@ async function runSingleImageUiScenario() {
     if (!entry) await sleep(1000)
   }
   if (!entry) throw new Error(`timeout: entry for ${name}`)
-  const card = await waitFor('history card', () =>
-    document.querySelector<HTMLElement>(
-      `[data-testid="history-card"][data-entry-id="${entry!.id}"]`
-    )
-  )
-  card.querySelector<HTMLElement>('button')!.click()
+  const card = await waitFor('history card', () => historyRow(entry!.id))
+  openRow(card)
   const panel = await waitFor('detail panel', () => $('[data-testid="clipboard-detail"]'))
   const hero = await waitFor(
     'single image in the detail panel',
@@ -640,7 +1593,9 @@ async function runNativePanelScenario() {
   await sleep(4000)
   await record('act-shortcut', true)
   const shortcut = await settle(
-    HostService.UpdateKeyboardShortcuts({ 'global.toggleQuickPanel': 'Ctrl+Alt+Space' })
+    HostService.UpdateKeyboardShortcuts({
+      'global.toggleQuickPanel': 'Ctrl+Alt+Space',
+    })
   )
   await record('shortcut-saved', shortcut.status === 'ok', {
     result: shortcut,
@@ -678,7 +1633,7 @@ async function runLinuxShortcutUiScenario(phase: string) {
     shortcutLabel: editButton()?.textContent,
   })
   await navigate(
-    () => link('/settings')?.click(),
+    () => navControl('/settings')?.click(),
     '/settings',
     () => document.querySelectorAll('button[aria-current]').length,
     'settings-open',
@@ -691,7 +1646,10 @@ async function runLinuxShortcutUiScenario(phase: string) {
     )
   ).then(b => b.click())
   await waitFor('quick panel shortcut row', () => editButton())
-  await record('ui-quick-panel-state', true, { ...readState(), locale: i18n.language })
+  await record('ui-quick-panel-state', true, {
+    ...readState(),
+    locale: i18n.language,
+  })
   const action = phase.split(':')[1] ?? 'observe'
   if (action === 'enable') {
     // The product default may be off. Only this explicit phase plays the user turning the switch on (a separate,
@@ -900,7 +1858,7 @@ async function runAutostartScenario(phase: string) {
 async function runDeviceGroupUpdateScenario() {
   await reachMainLayout()
   const click = (href: string) => () =>
-    void waitFor(`link ${href}`, () => link(href)).then(a => a.click())
+    void waitFor(`link ${href}`, () => navControl(href)).then(a => a.click())
   await navigate(click('/devices'), '/', devicesPage, 'devices', true)
   daemonWs.subscribe(['device-trust', 'system'], event => {
     void record('device-trust-ws', true, { type: event.eventType })
@@ -1050,7 +2008,7 @@ async function runLinuxPackageUpdateScenario() {
     throw new Error('expected an installed deb or rpm')
   }
   await navigate(
-    () => link('/settings')?.click(),
+    () => navControl('/settings')?.click(),
     '/settings',
     () => $('[data-testid="settings-page-header"]'),
     'package-settings',
@@ -1086,7 +2044,10 @@ async function runLinuxPackageUpdateScenario() {
     expected,
     text,
   })
-  sendNotification({ title: 'Linux acceptance', body: 'Isolated package notification fixture' })
+  sendNotification({
+    title: 'Linux acceptance',
+    body: 'Isolated package notification fixture',
+  })
   await record('package-notification-requested', true)
   await sleep(4000)
   await control('exit')
@@ -1115,7 +2076,9 @@ async function runHostContractScenario() {
       !!session.data &&
       session.data.sessionToken.length > 0 &&
       session.data.expiresInSecs > 0,
-    { tokenLength: session.status === 'ok' ? session.data?.sessionToken.length : null }
+    {
+      tokenLength: session.status === 'ok' ? session.data?.sessionToken.length : null,
+    }
   )
   const id = await commands.getDeviceID()
   const meta = await commands.getDeviceMeta()
@@ -1144,9 +2107,13 @@ async function runHostContractScenario() {
     startup
   )
   const unlocked = await commands.getContentUnlocked()
-  await record('content-unlocked-boolean', typeof unlocked === 'boolean', { unlocked })
+  await record('content-unlocked-boolean', typeof unlocked === 'boolean', {
+    unlocked,
+  })
   const kind = await commands.getInstallKind()
-  await record('install-kind-enum', Object.values(InstallKind).includes(kind), { kind })
+  await record('install-kind-enum', Object.values(InstallKind).includes(kind), {
+    kind,
+  })
   await record('bootstrap-failure-null', (await commands.getDaemonBootstrapFailure()) === null)
 
   // ---- typed event: the host emits a snapshot, the page receives the generated payload type

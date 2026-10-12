@@ -17,7 +17,7 @@
 //   system notifications belong to the native shell, not to this kit. Window materials are applied
 //   by the native host; the kit only marks the regions that show them (`Surface`), and a skin
 //   reads the material the host actually applied from the host layer, never from business code.
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 
 export type ColorScheme = 'light' | 'dark'
 
@@ -34,7 +34,10 @@ export type IconName =
   | 'dismiss'
   | 'edit'
   | 'filter'
+  | 'grid'
   | 'history'
+  | 'info'
+  | 'list'
   | 'moon'
   | 'more'
   | 'pin'
@@ -55,10 +58,15 @@ export type ControlSize = 'small' | 'medium' | 'large' | 'xlarge'
  * `primary`: the single main action of a view (Windows accent button, macOS default button).
  * `standard`: an ordinary push button. `subtle`: command-bar and icon buttons without a fill at rest.
  */
-export type ButtonVariant = 'primary' | 'standard' | 'subtle'
+/** `destructive` removes data (Delete); it is not the confirmation of an alert. */
+export type ButtonVariant = 'primary' | 'standard' | 'subtle' | 'destructive'
 
-/** Project tag palette; skins own the light/dark values. */
-export type TagColor = 'deploy' | 'docker' | 'git' | 'design' | 'finance' | 'work' | 'neutral'
+/**
+ * Tag colour as the daemon stores it: a palette name, whose light/dark values the skin owns, or a
+ * custom `#rrggbb`. A tag without a colour is drawn neutral.
+ */
+export type TagPaletteColor = 'orange' | 'blue' | 'green' | 'purple' | 'gray'
+export type TagColor = TagPaletteColor | `#${string}`
 
 /**
  * A secondary command of a component. `label` is the visible text or, for an icon-only control,
@@ -137,6 +145,10 @@ export interface SearchFieldProps {
   label: string
   /** Display-only shortcut hint such as `Ctrl+F`; registering the shortcut is the caller's job. */
   shortcutHint?: string
+  /** Return or Enter in the field: search now instead of waiting for typing to settle. */
+  onSubmit?: (value: string) => void
+  /** The text input, for the caller's focus shortcut. */
+  inputRef?: Ref<HTMLInputElement>
 }
 
 export interface SelectItem {
@@ -153,6 +165,11 @@ export interface SelectProps {
   label: string
   placeholder?: string
   disabled?: boolean
+  /**
+   * `filter`: narrows the list in view (a filter pill in the list's filter row); the placeholder is
+   * the filter's name while nothing is chosen.
+   */
+  purpose?: 'filter'
 }
 
 export interface SegmentedItem {
@@ -187,6 +204,10 @@ export type MenuEntry =
       /** Trailing count, already formatted by the caller, e.g. items in a saved view. */
       count?: string
       swatch?: TagColor
+      /** Marks the current choice, e.g. a tag's colour. */
+      checked?: boolean
+      /** A submenu, e.g. "Merge into ›". */
+      children?: MenuEntry[]
     }
   | { id: string; kind: 'separator' }
 
@@ -222,6 +243,8 @@ export interface AlertDialogProps {
   /** The confirmed action destroys data; each skin applies its platform's destructive styling. */
   destructive?: boolean
   onConfirm: () => void
+  /** A "do not ask again" checkbox (NSAlert suppression button). */
+  suppression?: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void }
 }
 
 export interface BadgeProps {
@@ -235,6 +258,110 @@ export interface TagProps {
   color?: TagColor
   /** Shows a remove button named by `remove.label`, e.g. "Remove #finance". */
   remove?: LabelledAction
+  /** Secondary text after the name, e.g. "2 of 3". */
+  detail?: string
+  /** Only some of the selected items carry the tag (drawn striped). */
+  partial?: boolean
+  /** Makes the tag itself a button, e.g. "Add #docker to all 3". */
+  action?: LabelledAction
+}
+
+/** A condition shown as a token inside a `TokenSearchField`, e.g. `Tag #deploy`. */
+export interface SearchFieldToken {
+  id: string
+  /** The condition's field, already localized; display only. */
+  field: string
+  value: string
+  /** Colour family hint (design: source green, tag orange, time blue); skins may draw all alike. */
+  kind?: 'tag' | 'source' | 'time' | 'type' | 'other'
+  remove: LabelledAction
+}
+
+export interface SearchSuggestion {
+  id: string
+  label: string
+  /** Heading shown above this item (the first item of a group). */
+  group?: string
+  /** Trailing text, e.g. "12 items · 4 from arch-desktop". */
+  detail?: string
+  kind?: SearchFieldToken['kind']
+  /** Already applied. */
+  selected?: boolean
+  /** Matches nothing under the other conditions. */
+  muted?: boolean
+  /** Creates something new ("Create #re"). */
+  create?: boolean
+}
+
+/** A key press the caller's search model decides on; `preventDefault` keeps the field from acting. */
+export interface SearchFieldKey {
+  key: string
+  shiftKey: boolean
+  preventDefault: () => void
+}
+
+/**
+ * Search field with condition tokens and a suggestion menu (macOS search tokens, WinUI
+ * AutoSuggestBox with tokens). The caller owns the search model: text, tokens, the suggestion list,
+ * which one is highlighted and what keys do (`onKeyDown` sees every key first). Each skin implements
+ * the ARIA combobox pattern: the input has role `combobox`, `aria-expanded` follows
+ * `suggestionsOpen`, `aria-controls` names the suggestion listbox and `aria-activedescendant` the
+ * highlighted option.
+ */
+export interface TokenSearchFieldProps {
+  label: string
+  placeholder?: string
+  /** Display-only shortcut hint such as `⌘F`. */
+  shortcutHint?: string
+  value: string
+  onValueChange: (value: string) => void
+  tokens: SearchFieldToken[]
+  suggestions: SearchSuggestion[]
+  suggestionsOpen: boolean
+  onSuggestionsOpenChange: (open: boolean) => void
+  /** Highlighted suggestion index, -1 for none; the caller moves it (arrow keys via `onKeyDown`). */
+  highlighted: number
+  onHighlightedChange: (index: number) => void
+  onSelectSuggestion: (index: number) => void
+  onKeyDown?: (key: SearchFieldKey) => void
+  /** Trailing clear-all button, shown while there is text or a token. */
+  clear?: LabelledAction
+  /** Display-only footer of the suggestion menu (keyboard hints). */
+  suggestionsFooter?: string
+  inputRef?: Ref<HTMLInputElement>
+}
+
+/** The colour choice offered on a `create` suggestion of a `ComboField`. */
+export interface ComboFieldCreateColor {
+  label: string
+  colors: TagColor[]
+  value: TagColor
+  onValueChange: (color: TagColor) => void
+}
+
+/**
+ * A compact text field with a suggestion menu, e.g. the tag field of an item (design MC1). The
+ * caller owns the model (text, suggestions, highlighted item, keys); the field reports when the
+ * user leaves it (`onDismiss`: focus moved away). Each skin implements the ARIA combobox pattern.
+ */
+export interface ComboFieldProps {
+  label: string
+  /** Leading text inside the field, e.g. `#`. */
+  prefix?: string
+  placeholder?: string
+  value: string
+  onValueChange: (value: string) => void
+  suggestions: SearchSuggestion[]
+  highlighted: number
+  onHighlightedChange: (index: number) => void
+  onSelectSuggestion: (index: number) => void
+  onKeyDown?: (key: SearchFieldKey) => void
+  onDismiss: () => void
+  createColor?: ComboFieldCreateColor
+  maxLength?: number
+  /** Display-only footer of the menu (keyboard hints). */
+  footer?: string
+  inputRef?: Ref<HTMLInputElement>
 }
 
 /** A search condition chip such as `from: iPhone 16`. */
@@ -262,6 +389,14 @@ export interface ToolbarProps {
   children: ReactNode
 }
 
+/**
+ * Toolbar items that belong together (Send, Pin, More). macOS: one glass capsule; Windows: a
+ * group of the command bar.
+ */
+export interface ToolbarGroupProps {
+  children: ReactNode
+}
+
 export type ToolbarButtonProps = Omit<ButtonProps, 'size'>
 
 export interface ItemListItem {
@@ -273,6 +408,8 @@ export interface ItemListItem {
   leading?: ReactNode
   /** Trailing content such as tags or a pin mark. */
   trailing?: ReactNode
+  /** Search terms the skin marks in the title (system find highlight). */
+  highlight?: string[]
 }
 
 /**
@@ -301,21 +438,372 @@ export interface SidebarNavItem {
   swatch?: TagColor
   /** Trailing count, already formatted by the caller (`12,408`, `4 of 5`). */
   count?: string
+  /** Status dot in place of an icon, e.g. a device's connection. */
+  status?: StatusTone
+  /** Display-only shortcut hint, e.g. `⌘,` on a settings row. */
+  shortcutHint?: string
 }
 
 export interface SidebarNavSection {
   id: string
   title?: string
   items: SidebarNavItem[]
+  /** A command in the section heading, e.g. "New Tag" (shown as an icon button). */
+  action?: LabelledAction & { icon: IconName }
+  /** A link row after the items, e.g. "All Tags · 42". */
+  more?: LabelledAction
+  /** Shown instead of the items while there are none. */
+  placeholder?: { text?: string; action?: LabelledAction }
+  /**
+   * The section as one icon when a skin collapses the sidebar to icons (Windows compact pane), its
+   * items then open in a flyout. Skins that hide the sidebar completely ignore it.
+   */
+  icon?: IconName
 }
 
 /** Single-selection navigation (Up/Down move, Enter/Space select, Tab leaves the list). */
 export interface SidebarNavProps {
   label: string
   sections: SidebarNavSection[]
+  /** Items pinned to the bottom of the sidebar, e.g. Settings; they select like the others. */
+  footer?: SidebarNavItem[]
   value?: string
   defaultValue?: string
   onValueChange?: (id: string) => void
+}
+
+/**
+ * The main window: a sidebar beside the content, with one toolbar band across the top of the
+ * content (macOS unified toolbar). The skin owns the sidebar width, the window-chrome insets
+ * (macOS traffic lights) and where the show/hide control sits; `sidebar` is drawn on the `sidebar`
+ * window region and `children` (the panes) on the opaque `content` region.
+ */
+export interface SplitViewProps {
+  sidebar: ReactNode
+  sidebarHidden?: boolean
+  /** The control that hides or shows the sidebar; `label` names the action it performs now. */
+  sidebarToggle: LabelledAction & { shortcutHint?: string }
+  /** Title of the content at the leading end of the toolbar band. */
+  title: string
+  /** Secondary text after the title, e.g. the item count. */
+  subtitle?: string
+  /**
+   * The window's search field (a `SearchField`). macOS: first item of the toolbar's trailing group;
+   * Windows: centred in the title bar.
+   */
+  search?: ReactNode
+  /** Controls just before the search field, e.g. the list / grid switch. */
+  toolbarLeading?: ReactNode
+  /** Controls at the trailing end of the toolbar band, after the search field. */
+  toolbar?: ReactNode
+  children: ReactNode
+}
+
+/**
+ * A column of the content region below the toolbar band. `list` is the browsing column beside a
+ * detail (the history list); `detail` fills the remaining width; `main` is a browsing column that
+ * fills the width by itself (the grid without its inspector).
+ */
+export interface PaneProps {
+  kind: 'list' | 'detail' | 'main'
+  label: string
+  children: ReactNode
+}
+
+/** Text roles; skins map them to the platform type ramp. Business code never sets font sizes. */
+export type TextRole = 'title' | 'headline' | 'body' | 'callout' | 'caption'
+export type TextTone = 'primary' | 'secondary' | 'tertiary' | 'positive' | 'critical'
+
+export interface TextProps {
+  role?: TextRole
+  tone?: TextTone
+  /** Bold within the role, e.g. a device name inside a sentence. */
+  emphasized?: boolean
+  monospace?: boolean
+  /** One line with an ellipsis. */
+  truncate?: boolean
+  children: ReactNode
+}
+
+/** Clipboard content kinds the kit can draw a badge for. */
+export type ContentKind = 'text' | 'code' | 'link' | 'image' | 'file'
+
+/**
+ * The type mark of an entry. `tile`: the square leading visual of a list row (an image shows
+ * `imageSrc` as a thumbnail). `pill`: the capsule naming the kind in a detail header.
+ */
+export interface KindBadgeProps {
+  kind: ContentKind
+  /** Visible text of the mark (`TXT`, `PDF`, `Code`); it is also the accessible name. */
+  label: string
+  variant: 'tile' | 'pill'
+  imageSrc?: string
+}
+
+/** A run of consecutive `items` of a `GroupedList` under one heading. */
+export interface ListGroup {
+  id: string
+  title: string
+  /** Secondary text after the title, e.g. the date of a day heading. */
+  detail?: string
+  /** Right-aligned text, already formatted, e.g. "5 items". */
+  trailing?: string
+  /** How many of the following items belong to this group. */
+  count: number
+}
+
+/**
+ * A long, lazily loaded list of selectable items in groups (a history list). Rows outside the
+ * viewport are not rendered. Keyboard: Up/Down move the selection, Shift extends it, Home/End jump,
+ * the platform select-all shortcut selects every loaded row, Enter calls `onActivate`, the platform's
+ * delete key calls `onDelete` (macOS Delete/⌫ or Forward Delete, Windows Delete). Pointer: a click selects one row, the platform modifier adds or
+ * removes a row and Shift selects a range. Rows show multi-selection the platform way (macOS has no
+ * checkboxes). Each row element carries `data-item-id`.
+ */
+export interface GroupedListProps {
+  label: string
+  groups: ListGroup[]
+  items: ItemListItem[]
+  /** Ids of the selected rows; the last one is the row the keyboard moves from. */
+  selection: string[]
+  onSelectionChange: (ids: string[]) => void
+  onActivate?: (id: string) => void
+  onDelete?: (ids: string[]) => void
+  /** Called near the end of the loaded rows, to load more. */
+  onEndReached?: () => void
+  /** Context menu of the selection, or of the right-clicked row when it is not selected. */
+  contextMenu?: {
+    items: (ids: string[]) => MenuEntry[]
+    onAction: (id: string, ids: string[]) => void
+  }
+  /** Content after the last row, e.g. a loading indicator or a hint. */
+  footer?: ReactNode
+}
+
+/**
+ * A symbol inline with content. Without `label` it is decorative (hidden from assistive tech).
+ * `highlight` is the attention colour of a marked state, e.g. a pinned item (macOS yellow).
+ */
+export interface IconProps {
+  name: IconName
+  label?: string
+  tone?: 'secondary' | 'highlight'
+}
+
+/**
+ * The frame around an item's content in a detail pane. `image` puts a checkerboard behind
+ * transparent pixels; `code` is a dark card. Controls can float over two corners (design ME1:
+ * Fit / 100% top trailing, Quick Look bottom leading).
+ */
+export interface PreviewFrameProps {
+  kind: 'plain' | 'code' | 'image'
+  /** A caption bar above the content, e.g. "3 lines · 74 characters". */
+  caption?: string
+  /** Display-only trailing text of the caption bar, e.g. a shortcut. */
+  captionTrailing?: string
+  topEnd?: ReactNode
+  bottomStart?: ReactNode
+  children: ReactNode
+}
+
+export interface Fact {
+  id: string
+  label: string
+  value: string
+  monospace?: boolean
+}
+
+/** Small facts side by side, e.g. an image's dimensions and format (design ME1). */
+export interface FactListProps {
+  label: string
+  facts: Fact[]
+}
+
+/**
+ * A large preview over the window (design ME4 Quick Look; the macOS QLPreviewPanel is not used). It
+ * traps focus; Escape and Space close it, the arrow keys call `previous` / `next`, Return calls
+ * `primary` (e.g. copy and close).
+ */
+export interface QuickLookProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** E.g. "2 of 21". */
+  title: string
+  /** Accessible name of the close button. */
+  closeLabel: string
+  src: string | null
+  alt: string
+  previous?: LabelledAction
+  next?: LabelledAction
+  primary?: LabelledAction
+  /** Commands in the title bar, e.g. Open in Preview. */
+  actions?: ReactNode
+}
+
+/** A colour dot, e.g. a tag's colour beside its name; without `label` it is decorative. */
+export interface ColorDotProps {
+  color?: TagColor
+  label?: string
+}
+
+export interface GridItem {
+  id: string
+  title: string
+  subtitle?: string
+  /** What the card body draws: an image (from `media`), a dark code snippet, a link or text. */
+  kind: ContentKind
+  /** Text shown in the card body (code, link or text). */
+  text?: string
+  /** The card body for an image, e.g. its thumbnail element. */
+  media?: ReactNode
+  /** Small marks over the card, e.g. the pin. */
+  badges?: ReactNode
+}
+
+/**
+ * A lazily loaded grid of selectable cards in groups (Finder icon view, design ME2). As in
+ * `GroupedList` the grid is one tab stop naming the current card with `aria-activedescendant`,
+ * each card element carries `data-item-id`, and selection, activation, delete and the context menu
+ * work the same; the arrow keys move in two dimensions.
+ */
+export interface GroupedGridProps {
+  label: string
+  groups: ListGroup[]
+  items: GridItem[]
+  /** Card size from the toolbar slider: 0 smallest to 1 largest. */
+  size: number
+  selection: string[]
+  onSelectionChange: (ids: string[]) => void
+  onActivate?: (id: string) => void
+  onDelete?: (ids: string[]) => void
+  onEndReached?: () => void
+  contextMenu?: GroupedListProps['contextMenu']
+  footer?: ReactNode
+}
+
+/** A continuous value, e.g. the grid's card size. */
+export interface SliderProps {
+  label: string
+  value: number
+  onValueChange: (value: number) => void
+  min: number
+  max: number
+  step?: number
+}
+
+/** A floating bar of the main actions at the bottom of a pane. */
+export interface ActionBarProps {
+  children: ReactNode
+  /** Display-only hint at the trailing end, e.g. keyboard shortcuts. */
+  hint?: string
+}
+
+/** Empty, no-results and placeholder states of a pane (AppKit "content unavailable"). */
+export interface ContentUnavailableProps {
+  icon?: IconName
+  title: string
+  description?: string
+  /** Actions or choices below the description. */
+  children?: ReactNode
+}
+
+/**
+ * A modal pane for a focused task: macOS sheet dropping from the toolbar, WinUI ContentDialog. Each
+ * skin traps focus inside it and returns focus to the control that opened it on close.
+ */
+export interface SheetProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  /** Controls beside the title, e.g. a filter field. */
+  header?: ReactNode
+  children: ReactNode
+  /** Leading footer content, e.g. add/remove buttons and a status line. */
+  footer?: ReactNode
+  /** The default button that closes the sheet ("Done"). */
+  done: LabelledAction
+}
+
+export interface TableColumn {
+  id: string
+  label: string
+  align?: 'start' | 'end' | 'center'
+  /** Takes the remaining width. */
+  fill?: boolean
+}
+
+export interface TableRow {
+  id: string
+  cells: Record<string, ReactNode>
+}
+
+/**
+ * A multi-column table with row selection (NSTableView with alternating rows; WinUI ListView with
+ * columns). Keyboard as `GroupedList`: Up/Down, Shift extends, the platform select-all shortcut,
+ * the platform delete key calls `onDelete`.
+ */
+export interface TableProps {
+  label: string
+  columns: TableColumn[]
+  rows: TableRow[]
+  selection: string[]
+  onSelectionChange: (ids: string[]) => void
+  onDelete?: (ids: string[]) => void
+  contextMenu?: {
+    items: (ids: string[]) => MenuEntry[]
+    onAction: (id: string, ids: string[]) => void
+  }
+  /** Shown instead of the rows while there are none. */
+  empty?: string
+}
+
+/** A single-line text field, e.g. renaming in place. Return calls `onSubmit`, Escape `onCancel`. */
+export interface TextFieldProps {
+  label: string
+  value: string
+  onValueChange: (value: string) => void
+  onSubmit?: (value: string) => void
+  onCancel?: () => void
+  placeholder?: string
+  maxLength?: number
+  /** Focus the field when it appears. */
+  autoFocus?: boolean
+  /** Shown under the field, e.g. "#design already exists." */
+  error?: string
+}
+
+export interface StepListStep {
+  id: string
+  title: string
+  description?: string
+  /** Live status under the description, e.g. "Waiting for your first copy…"; `active` shows it in progress. */
+  status?: { text: string; active?: boolean }
+  /** The step's command, e.g. "Pair a Device…". */
+  action?: LabelledAction & { primary?: boolean }
+  done?: boolean
+}
+
+/** Numbered getting-started steps (macOS cards with numbered badges, WinUI setup-guide list). */
+export interface StepListProps {
+  label: string
+  steps: StepListStep[]
+}
+
+export type StatusTone = 'positive' | 'neutral' | 'warning' | 'critical'
+
+export interface InsetListRow {
+  id: string
+  title: string
+  /** Trailing status text, coloured by `tone`. */
+  detail?: string
+  tone?: StatusTone
+  action?: LabelledAction
+}
+
+/** A grouped (inset) table of short rows with a status dot, e.g. per-device delivery. */
+export interface InsetListProps {
+  label: string
+  rows: InsetListRow[]
 }
 
 export declare function UiRoot(props: UiRootProps): ReactNode
@@ -333,9 +821,31 @@ export declare function AlertDialog(props: AlertDialogProps): ReactNode
 export declare function Badge(props: BadgeProps): ReactNode
 export declare function Tag(props: TagProps): ReactNode
 export declare function SearchToken(props: SearchTokenProps): ReactNode
+export declare function TokenSearchField(props: TokenSearchFieldProps): ReactNode
+export declare function ComboField(props: ComboFieldProps): ReactNode
 export declare function InlineNotice(props: InlineNoticeProps): ReactNode
 export declare function Toolbar(props: ToolbarProps): ReactNode
 export declare function ToolbarButton(props: ToolbarButtonProps): ReactNode
 export declare function ToolbarDivider(): ReactNode
+export declare function ToolbarGroup(props: ToolbarGroupProps): ReactNode
 export declare function ItemList(props: ItemListProps): ReactNode
 export declare function SidebarNav(props: SidebarNavProps): ReactNode
+export declare function SplitView(props: SplitViewProps): ReactNode
+export declare function Pane(props: PaneProps): ReactNode
+export declare function Text(props: TextProps): ReactNode
+export declare function KindBadge(props: KindBadgeProps): ReactNode
+export declare function GroupedList(props: GroupedListProps): ReactNode
+export declare function GroupedGrid(props: GroupedGridProps): ReactNode
+export declare function Slider(props: SliderProps): ReactNode
+export declare function Icon(props: IconProps): ReactNode
+export declare function ColorDot(props: ColorDotProps): ReactNode
+export declare function PreviewFrame(props: PreviewFrameProps): ReactNode
+export declare function FactList(props: FactListProps): ReactNode
+export declare function QuickLook(props: QuickLookProps): ReactNode
+export declare function ActionBar(props: ActionBarProps): ReactNode
+export declare function ContentUnavailable(props: ContentUnavailableProps): ReactNode
+export declare function Sheet(props: SheetProps): ReactNode
+export declare function Table(props: TableProps): ReactNode
+export declare function TextField(props: TextFieldProps): ReactNode
+export declare function StepList(props: StepListProps): ReactNode
+export declare function InsetList(props: InsetListProps): ReactNode

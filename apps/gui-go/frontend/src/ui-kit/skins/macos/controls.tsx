@@ -19,14 +19,16 @@ import type {
 } from '@/ui-kit/contract'
 import { glyph } from './glyph'
 import { Icon } from './icons'
+import { isImeKey } from './ime'
 import * as parts from './parts'
 import { usePortalContainer } from './portal'
 
 /** `subtle` has no bezel at rest, which on macOS is a borderless button. */
-const tintOf: Record<ButtonVariant, 'primary' | 'none' | 'borderless'> = {
+const tintOf: Record<ButtonVariant, 'primary' | 'none' | 'borderless' | 'destructive'> = {
   primary: 'primary',
   standard: 'none',
   subtle: 'borderless',
+  destructive: 'destructive',
 }
 
 /** AppKit help tag: shown on hover after a delay; the trigger keeps its own accessible name. */
@@ -170,6 +172,8 @@ export function SearchField({
   placeholder,
   label,
   shortcutHint,
+  onSubmit,
+  inputRef,
 }: SearchFieldProps) {
   return (
     <parts.SearchField
@@ -178,7 +182,14 @@ export function SearchField({
       hint={shortcutHint ?? ''}
       value={value}
       defaultValue={defaultValue}
+      inputRef={inputRef}
       onValueChange={next => onValueChange?.(next)}
+      onKeyDown={event => {
+        if (event.key === 'Enter' && onSubmit && !isImeKey(event)) {
+          event.preventDefault()
+          onSubmit(event.currentTarget.value)
+        }
+      }}
     />
   )
 }
@@ -213,8 +224,17 @@ export function Badge({ count, label }: BadgeProps) {
   )
 }
 
-export function Tag({ name, color = 'neutral', remove }: TagProps) {
-  return <parts.Tag label={name} color={color} remove={remove} />
+export function Tag({ name, color, remove, detail, partial, action }: TagProps) {
+  return (
+    <parts.Tag
+      label={name}
+      color={color}
+      remove={remove}
+      detail={detail}
+      partial={partial}
+      action={action}
+    />
+  )
 }
 
 export function SearchToken({ field, value, remove }: SearchTokenProps) {

@@ -87,6 +87,7 @@ const LibraryMainLayout: React.FC<LibraryMainLayoutProps> = ({ children }) => {
   return (
     <LibraryChromeContext value={chrome}>
       <main
+        data-window-backdrop
         // Pages inset their top-right headers by this much so they clear the
         // window controls overlay (see WINDOW_CONTROLS_* in window-controls-inset).
         style={hasCustomWindowControls ? WINDOW_CONTROLS_INSET_STYLE : undefined}
@@ -97,7 +98,7 @@ const LibraryMainLayout: React.FC<LibraryMainLayoutProps> = ({ children }) => {
           <div
             data-tauri-drag-region
             {...windowDragging}
-            className="absolute right-0 top-0 z-50 h-10 select-none"
+            className="absolute right-0 top-0 z-50 h-12 select-none"
           >
             <WindowControls />
           </div>

@@ -13,6 +13,27 @@ export {
   Tag,
   ToggleButton,
 } from './controls'
+export { GroupedGrid } from './grouped-grid'
+export { GroupedList } from './grouped-list'
 export { ItemList, SidebarNav } from './lists'
 export { AlertDialog, ContextMenu, Menu } from './menus'
-export { Surface, Toolbar, ToolbarButton, ToolbarDivider, UiRoot } from './root'
+export {
+  ActionBar,
+  ColorDot,
+  ContentUnavailable,
+  Icon,
+  InsetList,
+  KindBadge,
+  Pane,
+  SplitView,
+  Text,
+} from './pane'
+export { Surface, Toolbar, ToolbarButton, ToolbarDivider, ToolbarGroup, UiRoot } from './root'
+export { ComboField } from './combo-field'
+export { FactList, PreviewFrame, QuickLook } from './preview'
+export { Sheet } from './sheet'
+export { Slider } from './slider'
+export { StepList } from './step-list'
+export { Table } from './table'
+export { TextField } from './text-field'
+export { TokenSearchField } from './token-search'
