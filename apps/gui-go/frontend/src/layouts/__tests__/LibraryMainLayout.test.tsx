@@ -101,8 +101,8 @@ describe('LibraryMainLayout', () => {
     platform => {
       const custom = renderOn(platform, 'custom')
       const customMain = custom.container.querySelector('main') as HTMLElement
-      expect(customMain.style.getPropertyValue('--window-controls-inset-x')).toBe('9rem')
-      expect(customMain.style.getPropertyValue('--window-controls-inset-y')).toBe('2.5rem')
+      expect(customMain.style.getPropertyValue('--window-controls-inset-x')).toBe('8.625rem')
+      expect(customMain.style.getPropertyValue('--window-controls-inset-y')).toBe('3rem')
       custom.unmount()
 
       const system = renderOn(platform, 'system')

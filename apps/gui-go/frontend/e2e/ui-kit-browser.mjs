@@ -413,10 +413,11 @@ try {
         el => getComputedStyle(el.querySelector('[role="menuitem"]')).color
       )
       assert.equal(color, 'rgb(255, 255, 255)')
-      // Skin variables must reach the portal mount node, not only the provider root.
+      // Skin variables must reach the portal mount node, not only the provider root: the menu flyout is the
+      // skin's dark solid layer (#2D2D2D), not Fluent's default.
       assert.equal(
         await menu.evaluate(el => getComputedStyle(el.closest('.fui-MenuPopover')).backgroundColor),
-        'rgba(44, 44, 44, 0.9)'
+        'rgb(45, 45, 45)'
       )
       await page.keyboard.press('Escape')
     })

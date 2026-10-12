@@ -1,4 +1,13 @@
-import { MenuDivider, MenuItem, MenuList, mergeClasses } from '@fluentui/react-components'
+import {
+  Menu,
+  MenuDivider,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
+  mergeClasses,
+} from '@fluentui/react-components'
+import { CheckmarkRegular } from '@fluentui/react-icons'
 import { createElement } from 'react'
 import type { MenuEntry } from '@/ui-kit/contract'
 import { iconFor } from './icons'
@@ -10,6 +19,11 @@ interface MenuEntriesProps {
   onAction: (id: string) => void
 }
 
+/**
+ * WinUI MenuFlyout items: icon or colour swatch, label, shortcut or count; a checked item carries the
+ * checkmark at its end (the current choice, e.g. a tag's colour); an item with children opens a
+ * cascading submenu (MenuFlyoutSubItem), whose items report through the same `onAction`.
+ */
 export function MenuEntries({ items, onAction }: MenuEntriesProps) {
   const styles = useMenuStyles()
   return (
@@ -21,14 +35,36 @@ export function MenuEntries({ items, onAction }: MenuEntriesProps) {
         ) : item.icon ? (
           createElement(iconFor(item.icon))
         ) : undefined
-        const secondary =
-          item.shortcut ?? (item.count === undefined ? undefined : String(item.count))
+        if (item.children) {
+          return (
+            <Menu key={item.id}>
+              <MenuTrigger disableButtonEnhancement>
+                <MenuItem icon={icon} disabled={item.disabled} className={styles.item}>
+                  {item.label}
+                </MenuItem>
+              </MenuTrigger>
+              <MenuPopover className={styles.popover}>
+                <MenuEntries items={item.children} onAction={onAction} />
+              </MenuPopover>
+            </Menu>
+          )
+        }
+        const secondary = item.checked ? (
+          <CheckmarkRegular aria-hidden="true" />
+        ) : (
+          (item.shortcut ?? (item.count === undefined ? undefined : String(item.count)))
+        )
         return (
           <MenuItem
             key={item.id}
             icon={icon}
             secondaryContent={secondary}
             disabled={item.disabled}
+            // The checkmark is drawn; assistive tech reads the state. Only a choice gets the radio role: passing
+            // `role={undefined}` would erase Fluent's default menuitem role.
+            {...(item.checked === undefined
+              ? {}
+              : { role: 'menuitemradio', 'aria-checked': item.checked })}
             className={mergeClasses(styles.item, item.destructive && styles.destructive)}
             onClick={() => onAction(item.id)}
           >

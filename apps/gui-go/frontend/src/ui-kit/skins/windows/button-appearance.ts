@@ -5,7 +5,7 @@ export const appearance = {
   primary: 'primary',
   standard: 'secondary',
   subtle: 'subtle',
-  // Win11 has no destructive push button: a standard one until the Windows design names one.
+  // Win11 has no destructive push button (WinUI keeps destructive commands standard; the text carries the warning).
   destructive: 'secondary',
 } as const satisfies Record<ButtonVariant, string>
 
