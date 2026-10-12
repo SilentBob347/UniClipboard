@@ -1,29 +1,11 @@
 import { TriangleAlert } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import {
-  Switch,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui'
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogCancel,
-  AlertDialogAction,
-} from '@/components/ui/alert-dialog'
 import { useSetting } from '@/hooks/useSetting'
 import { useUpdate } from '@/hooks/useUpdate'
 import { createLogger } from '@/lib/logger'
 import type { UpdateChannel } from '@/types/setting'
+import { SettingAlert, SettingSelect, SettingSwitch } from './SettingControls'
 import { SettingGroup } from './SettingGroup'
 import { SettingRow } from './SettingRow'
 import { useOptimisticSetting } from './useOptimisticSetting'
@@ -95,7 +77,11 @@ export function UpdatePreferencesGroup() {
           label={t('settings.sections.about.autoCheckUpdate.label')}
           description={t('settings.sections.about.autoCheckUpdate.description')}
         >
-          <Switch checked={autoCheckUpdate} onCheckedChange={setAutoCheckUpdate} />
+          <SettingSwitch
+            label={t('settings.sections.about.autoCheckUpdate.label')}
+            checked={autoCheckUpdate}
+            onCheckedChange={setAutoCheckUpdate}
+          />
         </SettingRow>
 
         <SettingRow
@@ -106,7 +92,8 @@ export function UpdatePreferencesGroup() {
               : t('settings.sections.about.autoDownloadUpdate.disabledHint')
           }
         >
-          <Switch
+          <SettingSwitch
+            label={t('settings.sections.about.autoDownloadUpdate.label')}
             checked={autoDownloadUpdate && autoCheckUpdate}
             onCheckedChange={setAutoDownloadUpdate}
             disabled={!autoCheckUpdate}
@@ -117,53 +104,29 @@ export function UpdatePreferencesGroup() {
           label={t('settings.sections.about.updateChannel.label')}
           description={t('settings.sections.about.updateChannel.description')}
         >
-          <Select value={updateChannel ?? 'auto'} onValueChange={handleUpdateChannelChange}>
-            <SelectTrigger className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">
-                {t('settings.sections.about.updateChannel.auto')}
-              </SelectItem>
-              <SelectItem value="stable">
-                {t('settings.sections.about.updateChannel.stable')}
-              </SelectItem>
-              <SelectItem value="alpha">
-                {t('settings.sections.about.updateChannel.alpha')}
-              </SelectItem>
-            </SelectContent>
-          </Select>
+          <SettingSelect
+            label={t('settings.sections.about.updateChannel.label')}
+            value={updateChannel ?? 'auto'}
+            onValueChange={handleUpdateChannelChange}
+            items={(['auto', 'stable', 'alpha'] as const).map(channel => ({
+              value: channel,
+              label: t(`settings.sections.about.updateChannel.${channel}`),
+            }))}
+          />
         </SettingRow>
       </SettingGroup>
 
-      <AlertDialog open={alphaWarningOpen} onOpenChange={handleAlphaWarningOpenChange}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogMedia className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-              <TriangleAlert className="size-5" />
-            </AlertDialogMedia>
-            <AlertDialogTitle>
-              {t('settings.sections.about.updateChannel.alphaWarning.title')}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {t('settings.sections.about.updateChannel.alphaWarning.description')}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>
-              {t('settings.sections.about.updateChannel.alphaWarning.cancel')}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={event => {
-                event.preventDefault()
-                handleConfirmAlphaChannel()
-              }}
-            >
-              {t('settings.sections.about.updateChannel.alphaWarning.confirm')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <SettingAlert
+        open={alphaWarningOpen}
+        onOpenChange={handleAlphaWarningOpenChange}
+        title={t('settings.sections.about.updateChannel.alphaWarning.title')}
+        description={t('settings.sections.about.updateChannel.alphaWarning.description')}
+        confirmLabel={t('settings.sections.about.updateChannel.alphaWarning.confirm')}
+        cancelLabel={t('settings.sections.about.updateChannel.alphaWarning.cancel')}
+        media={<TriangleAlert className="size-5" />}
+        // Stays open until the handler closes it.
+        onConfirm={async () => handleConfirmAlphaChannel()}
+      />
     </>
   )
 }

@@ -257,7 +257,9 @@ export interface AlertDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   title: string
-  description: string
+  description?: string
+  /** Further content under the description, e.g. a list of consequences. */
+  children?: ReactNode
   confirmLabel: string
   cancelLabel: string
   /** The confirmed action destroys data; each skin applies its platform's destructive styling. */
@@ -276,6 +278,8 @@ export interface AlertDialogProps {
     onValueChange: (value: string) => void
     placeholder?: string
   }
+  /** The Cancel button was used (as opposed to Escape or a click outside); the alert then closes. */
+  onCancel?: () => void
   confirmDisabled?: boolean
   /** The confirmed work is running: shown on the confirm button, and the alert cannot be dismissed. */
   busyLabel?: string
@@ -530,7 +534,7 @@ export interface SplitViewProps {
   sidebar: ReactNode
   sidebarHidden?: boolean
   /** The control that hides or shows the sidebar; `label` names the action it performs now. */
-  sidebarToggle: LabelledAction & { shortcutHint?: string }
+  sidebarToggle?: LabelledAction & { shortcutHint?: string }
   /** Title of the content at the leading end of the toolbar band. */
   title: string
   /** Secondary text after the title, e.g. the item count. */
@@ -931,6 +935,31 @@ export interface ButtonRowProps {
   children: ReactNode
 }
 
+/** A titled group of setting rows (macOS inset group, WinUI SettingsCard stack). */
+export interface SettingsGroupProps {
+  title?: string
+  children: ReactNode
+}
+
+/**
+ * One setting: label and optional description on the leading side, its control (switch, pop-up,
+ * button, status text) on the trailing side. The skin names the control by the label.
+ */
+export interface SettingsRowProps {
+  label?: string
+  /** Inline content after the label, e.g. an "Experimental" badge. */
+  labelExtra?: ReactNode
+  description?: string
+  children?: ReactNode
+}
+
+/** The scrolling page body of a settings category; `viewportRef` is the element that scrolls. */
+export interface SettingsContentProps {
+  label: string
+  viewportRef?: Ref<HTMLDivElement>
+  children: ReactNode
+}
+
 export interface EntryPageStatus {
   text: string
   tone?: 'neutral' | 'positive' | 'critical'
@@ -1008,3 +1037,6 @@ export declare function ChoiceList(props: ChoiceListProps): ReactNode
 export declare function Disclosure(props: DisclosureProps): ReactNode
 export declare function EntryPage(props: EntryPageProps): ReactNode
 export declare function ButtonRow(props: ButtonRowProps): ReactNode
+export declare function SettingsGroup(props: SettingsGroupProps): ReactNode
+export declare function SettingsRow(props: SettingsRowProps): ReactNode
+export declare function SettingsContent(props: SettingsContentProps): ReactNode

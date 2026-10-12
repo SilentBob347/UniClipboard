@@ -1,21 +1,6 @@
-import { Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  Switch,
-  Button,
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui'
+import { Button, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui'
+import { SettingAlert, SettingSwitch } from '../SettingControls'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
 import { openLogsDirectory, useDiagnosticsSettings } from './useDiagnosticsSettings'
@@ -48,8 +33,8 @@ export function DiagnosticsSettings() {
         label={t('settings.sections.general.logs.debug.label')}
         description={t('settings.sections.general.logs.debug.description')}
       >
-        <Switch
-          aria-label={t('settings.sections.general.logs.debug.label')}
+        <SettingSwitch
+          label={t('settings.sections.general.logs.debug.label')}
           checked={debugMode}
           onCheckedChange={handleDebugModeChange}
           disabled={isBusy}
@@ -62,16 +47,14 @@ export function DiagnosticsSettings() {
       >
         <TooltipProvider>
           <Tooltip disabled={!detailedCapture || captureUnavailable}>
-            <TooltipTrigger
-              render={
-                <Switch
-                  aria-label={t('settings.sections.general.logs.capture.label')}
-                  checked={detailedCapture}
-                  onCheckedChange={checked => void handleDetailedCaptureChange(checked)}
-                  disabled={isBusy || captureBusy || captureUnavailable || !captureStatus}
-                />
-              }
-            />
+            <TooltipTrigger render={<span className="inline-flex" />}>
+              <SettingSwitch
+                label={t('settings.sections.general.logs.capture.label')}
+                checked={detailedCapture}
+                onCheckedChange={checked => void handleDetailedCaptureChange(checked)}
+                disabled={isBusy || captureBusy || captureUnavailable || !captureStatus}
+              />
+            </TooltipTrigger>
             <TooltipContent role="tooltip" sideOffset={6}>
               {t('settings.sections.general.logs.capture.tooltip', {
                 minutes: Math.max(1, Math.ceil((captureStatus?.capture.remainingMs ?? 0) / 60_000)),
@@ -116,57 +99,32 @@ export function DiagnosticsSettings() {
         </Button>
       </SettingRow>
 
-      <AlertDialog
+      <SettingAlert
         open={debugDialog !== 'closed'}
-        onOpenChange={(open, eventDetails) => {
-          // While restarting, the dialog is forced: ignore every close request
-          // (Escape, overlay, programmatic) until the restart finishes or fails.
-          if (isRestarting) {
-            eventDetails.cancel()
-            return
-          }
+        onOpenChange={open => {
           if (!open) setDebugDialog('closed')
         }}
-      >
-        <AlertDialogContent className="bg-card text-card-foreground">
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {isRestarting
-                ? t('settings.sections.general.logs.debug.restartingTitle')
-                : t('settings.sections.general.logs.debug.confirmTitle')}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {isRestarting
-                ? t('settings.sections.general.logs.debug.restartingDescription')
-                : t('settings.sections.general.logs.debug.confirmDescription')}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {isRestarting ? (
-            <AlertDialogFooter>
-              <div className="flex w-full items-center justify-center gap-2 text-ui-body text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                {t('settings.sections.general.logs.debug.restartingTitle')}
-              </div>
-            </AlertDialogFooter>
-          ) : (
-            <AlertDialogFooter>
-              <AlertDialogCancel>
-                {t('settings.sections.general.logs.debug.cancel')}
-              </AlertDialogCancel>
-              <AlertDialogAction
-                onClick={event => {
-                  // Prevent the alert dialog from closing on action click;
-                  // we keep it open to show the forced restarting state.
-                  event.preventDefault()
-                  void handleConfirmDebugMode()
-                }}
-              >
-                {t('settings.sections.general.logs.debug.confirm')}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          )}
-        </AlertDialogContent>
-      </AlertDialog>
+        title={
+          isRestarting
+            ? t('settings.sections.general.logs.debug.restartingTitle')
+            : t('settings.sections.general.logs.debug.confirmTitle')
+        }
+        description={
+          isRestarting
+            ? t('settings.sections.general.logs.debug.restartingDescription')
+            : t('settings.sections.general.logs.debug.confirmDescription')
+        }
+        confirmLabel={t('settings.sections.general.logs.debug.confirm')}
+        cancelLabel={t('settings.sections.general.logs.debug.cancel')}
+        busyLabel={
+          isRestarting ? t('settings.sections.general.logs.debug.restartingTitle') : undefined
+        }
+        busyReplacesActions
+        // The alert stays open to show the forced restarting state.
+        onConfirm={async () => {
+          await handleConfirmDebugMode()
+        }}
+      />
     </SettingGroup>
   )
 }
