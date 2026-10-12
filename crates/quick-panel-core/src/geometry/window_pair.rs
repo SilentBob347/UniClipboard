@@ -56,6 +56,38 @@ pub struct PreviewPlacement {
     pub pointer_y: f64,
 }
 
+impl PreviewAnchor {
+    /// The anchor of a show session, in the global space of `screen`. The history window is where
+    /// the panel put it (`origin`, `panel` size), and `item` is relative to that window. Reading
+    /// the frame back from the toolkit would not do: GPUI on macOS reports a window frame
+    /// relative to its own display, not in the global space the work area is in.
+    pub fn for_session(
+        origin: (f64, f64),
+        panel: (f64, f64),
+        item: Rect,
+        screen: Rect,
+        scale: f64,
+        pointer_depth: f64,
+    ) -> Self {
+        Self {
+            history: Rect {
+                x: origin.0,
+                y: origin.1,
+                width: panel.0,
+                height: panel.1,
+            },
+            item: Rect {
+                x: origin.0 + item.x,
+                y: origin.1 + item.y,
+                ..item
+            },
+            screen,
+            scale,
+            pointer_depth,
+        }
+    }
+}
+
 pub fn preview_placement(anchor: PreviewAnchor, measured_height: f64) -> PreviewPlacement {
     preview_placement_with_width(anchor, PREVIEW_WIDTH, measured_height)
 }
@@ -96,15 +128,42 @@ pub fn preview_placement_for_size(
     let height = body_height
         .max(1.)
         .min((anchor.screen.height - 2. * inset).max(1.));
-    let width = (body_width + anchor.pointer_depth * scale).min(anchor.screen.width);
-    let right = anchor.history.right() + WINDOW_GAP * scale;
-    let (side, x) = if right + width <= anchor.screen.right() {
-        (PreviewSide::Right, right)
+    let wanted = (body_width + anchor.pointer_depth * scale).min(anchor.screen.width);
+    let gap = WINDOW_GAP * scale;
+    let right_room = anchor.screen.right() - anchor.history.right() - gap;
+    let left_room = anchor.history.x - gap - anchor.screen.x;
+    // Beside the history window on the side that holds the preview. When neither does, the preview
+    // shrinks into the larger side, which keeps it on the display and clear of history for as long
+    // as that side still has room for a body behind the pointer gutter.
+    let larger_room = right_room.max(left_room);
+    let (side, x, width) = if wanted <= right_room {
+        (PreviewSide::Right, anchor.history.right() + gap, wanted)
+    } else if wanted <= left_room {
+        (PreviewSide::Left, anchor.history.x - gap - wanted, wanted)
+    } else if larger_room > anchor.pointer_depth * scale {
+        if right_room >= left_room {
+            (PreviewSide::Right, anchor.history.right() + gap, right_room)
+        } else {
+            (
+                PreviewSide::Left,
+                anchor.history.x - gap - left_room,
+                left_room,
+            )
+        }
     } else {
-        (
-            PreviewSide::Left,
-            (anchor.history.x - WINDOW_GAP * scale - width).max(anchor.screen.x),
-        )
+        // The display cannot hold the history window (fixed size) and a preview body side by
+        // side. Staying on the display wins over staying clear of history: the preview covers part
+        // of it, flush with the display edge on the side with more room.
+        let side = if right_room >= left_room {
+            PreviewSide::Right
+        } else {
+            PreviewSide::Left
+        };
+        let x = match side {
+            PreviewSide::Right => anchor.screen.right() - wanted,
+            PreviewSide::Left => anchor.screen.x,
+        };
+        (side, x.max(anchor.screen.x), wanted)
     };
     let y = (anchor.item.center_y() - height / 2.).clamp(
         anchor.screen.y + inset,
@@ -258,5 +317,162 @@ mod tests {
         assert_eq!(rectangular.1, shaped.1);
         let p = preview_placement_for_size(a, rectangular.0, rectangular.1);
         assert_eq!(p.frame.right(), a.screen.right());
+    }
+
+    #[test]
+    fn preview_never_leaves_the_session_work_area_on_a_display_with_an_offset_origin() {
+        // A display stacked above the primary one: its work area has negative y.
+        let mut a = anchor(-500.);
+        a.screen = Rect {
+            x: 2560.,
+            y: -1000.,
+            width: 1920.,
+            height: 975.,
+        };
+        a.history.x = 3000.;
+        a.history.y = -700.;
+        let p = preview_placement(a, 300.);
+        assert!(p.frame.x >= a.screen.x && p.frame.right() <= a.screen.right());
+        assert!(p.frame.y >= a.screen.y && p.frame.bottom() <= a.screen.bottom());
+    }
+
+    #[test]
+    fn preview_shrinks_into_the_larger_side_instead_of_overlapping_history() {
+        let mut a = anchor(300.);
+        a.screen.width = 1000.;
+        a.history.x = 310.;
+        let p = preview_placement(a, 140.);
+        assert!(p.frame.x >= a.screen.x && p.frame.right() <= a.screen.right());
+        let clear_of_history = p.frame.right() <= a.history.x || p.frame.x >= a.history.right();
+        assert!(clear_of_history, "{:?} overlaps {:?}", p.frame, a.history);
+    }
+
+    #[test]
+    fn flip_left_on_a_display_whose_origin_is_not_zero_stays_on_that_display() {
+        let mut a = anchor(300.);
+        a.screen.x = 1920.;
+        a.screen.width = 1920.;
+        a.history.x = 1920. + 1500.;
+        let p = preview_placement(a, 140.);
+        assert_eq!(p.side, PreviewSide::Left);
+        assert!(p.frame.x >= a.screen.x);
+        assert_eq!(p.frame.right(), a.history.x - WINDOW_GAP);
+    }
+
+    /// Failure modes of a work area too narrow for both windows. The history window is fixed at
+    /// `PANEL_WIDTH * scale` (it is not resizable), so only the preview can give way.
+    fn narrow(width: f64, history_x: f64, scale: f64, depth: f64) -> PreviewAnchor {
+        let mut a = anchor(300.);
+        a.scale = scale;
+        a.pointer_depth = depth;
+        a.screen.x = 100.;
+        a.screen.width = width;
+        a.history.x = history_x;
+        a.history.width = PANEL_WIDTH * scale;
+        a
+    }
+
+    fn assert_grouped(a: PreviewAnchor, p: PreviewPlacement) {
+        assert!(
+            p.frame.x >= a.screen.x && p.frame.right() <= a.screen.right(),
+            "{:?} leaves {:?}",
+            p.frame,
+            a.screen
+        );
+        assert!(
+            p.frame.right() <= a.history.x || p.frame.x >= a.history.right(),
+            "{:?} overlaps {:?}",
+            p.frame,
+            a.history
+        );
+    }
+
+    #[test]
+    fn room_for_a_narrow_body_keeps_the_preview_inside_and_clear_of_history() {
+        // 380 history + 8 gap leaves 12 on the right: 4 for the body behind the 8 pointer gutter.
+        let a = narrow(400., 100., 1., POINTER_DEPTH);
+        let p = preview_placement(a, 140.);
+        assert_grouped(a, p);
+        assert_eq!(p.frame.width, 12.);
+    }
+
+    #[test]
+    fn no_room_for_any_body_stays_on_the_display_instead_of_a_one_pixel_sliver() {
+        for (width, scale, depth) in [
+            (385., 1., POINTER_DEPTH),
+            (380., 1., POINTER_DEPTH),
+            (300., 1., POINTER_DEPTH),
+            (300., 0.8, 0.),
+            (388., 1.25, 0.),
+        ] {
+            let a = narrow(width, 100., scale, depth);
+            for item_y in [64., 300., 980.] {
+                let mut a = a;
+                a.item.y = item_y;
+                let p = preview_placement(a, 140.);
+                assert!(
+                    p.frame.x >= a.screen.x && p.frame.right() <= a.screen.right(),
+                    "{width} {scale} {depth}: {:?} leaves {:?}",
+                    p.frame,
+                    a.screen
+                );
+                assert!(p.frame.width > 1., "{:?}", p.frame);
+            }
+        }
+    }
+
+    #[test]
+    fn rectangular_preview_in_a_narrow_area_is_grouped_down_to_its_last_pixel() {
+        let a = narrow(390., 100., 1., 0.);
+        let p = preview_placement(a, 140.);
+        assert_grouped(a, p);
+        assert_eq!(p.frame.width, 2.);
+    }
+
+    #[test]
+    fn image_capacity_never_promises_more_than_the_larger_side_has() {
+        let a = narrow(500., 150., 1., POINTER_DEPTH);
+        let (width, _) = preview_capacity(a);
+        let p = preview_placement_for_size(a, width, 200.);
+        assert_grouped(a, p);
+    }
+
+    #[test]
+    fn a_session_on_a_display_with_an_offset_origin_keeps_both_windows_there() {
+        let screen = Rect {
+            x: 2560.,
+            y: -300.,
+            width: 1920.,
+            height: 1055.,
+        };
+        let item = Rect {
+            x: 6.,
+            y: 100.,
+            width: 368.,
+            height: 30.,
+        };
+        let a = PreviewAnchor::for_session((3000., -100.), (380., 366.), item, screen, 1., 8.);
+        assert_eq!(
+            a.history,
+            Rect {
+                x: 3000.,
+                y: -100.,
+                width: 380.,
+                height: 366.
+            }
+        );
+        assert_eq!(
+            a.item,
+            Rect {
+                x: 3006.,
+                y: 0.,
+                width: 368.,
+                height: 30.
+            }
+        );
+        let p = preview_placement(a, 140.);
+        assert!(p.frame.x >= screen.x && p.frame.right() <= screen.right());
+        assert!(p.frame.y >= screen.y && p.frame.bottom() <= screen.bottom());
+        assert_eq!(p.frame.x, a.history.right() + WINDOW_GAP);
     }
 }

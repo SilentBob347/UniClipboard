@@ -5,10 +5,10 @@ use uc_daemon_contract::api::dto::settings::QuickPanelPositionDto;
 
 use crate::empty_page;
 use crate::grid;
-use crate::ports::{Choices, Live, Options, SearchFailure, ServiceError};
+use crate::ports::{Choices, Live, Options, SearchFailure, Secret, ServiceError, UnlockFailure};
 use crate::query::filters::{Dimension, Filters};
 
-use super::{timing, Ctx, Effect, Effects, PanelState, Preview};
+use super::{timing, Ctx, Effect, Effects, PanelState, Preview, UnlockStatus};
 
 impl PanelState {
     pub fn search(&mut self) -> Effects {
@@ -52,6 +52,7 @@ impl PanelState {
         self.search.loading = false;
         match result {
             Ok(result) => {
+                self.search.lock_known = true;
                 // Tags and devices were dropped while locked; read them again now it is open.
                 if self.search.locked {
                     effects.push(Effect::LoadOptions);
@@ -69,7 +70,12 @@ impl PanelState {
                 effects.push(Effect::LoadThumbnails);
             }
             Err(error) => {
+                let was_locked = self.search.locked;
                 self.search.locked = matches!(error, SearchFailure::Locked);
+                self.search.lock_known |= self.search.locked;
+                if self.search.locked && !was_locked {
+                    effects.extend(self.enter_locked());
+                }
                 // A 423 means locked as much as the lock notice does, which may have been missed.
                 if self.search.locked {
                     self.catalog.tags.clear();
@@ -83,7 +89,7 @@ impl PanelState {
                     effects.push(Effect::ScheduleReconnect(timing::RECONNECT_DELAY));
                 } else {
                     self.search.disconnected = None;
-                    // A locked history is unlocked in the main window; look again soon.
+                    // The daemon may be unlocked from elsewhere; look again soon.
                     if self.search.locked {
                         effects.push(Effect::ScheduleReconnect(timing::RECONNECT_DELAY));
                     }
@@ -140,6 +146,51 @@ impl PanelState {
         }
     }
 
+    /// The panel just became locked: the locked page starts with an empty passphrase box.
+    pub(super) fn enter_locked(&mut self) -> Effects {
+        self.session.unlock = UnlockStatus::Idle;
+        vec![Effect::ClearPassphrase]
+    }
+
+    /// Enter on the locked page.
+    pub(super) fn submit_passphrase(&mut self, ctx: &Ctx) -> Effects {
+        if self.session.unlock == UnlockStatus::Checking || ctx.passphrase.is_empty() {
+            return vec![];
+        }
+        self.session.unlock = UnlockStatus::Checking;
+        vec![Effect::Unlock(Secret::new(ctx.passphrase))]
+    }
+
+    pub(super) fn on_unlock_done(&mut self, result: Result<(), UnlockFailure>) -> Effects {
+        // Only the check this opening is waiting for counts. Opening the panel again forgets it, and
+        // a late answer must neither clear what is typed now nor show an old failure. A right
+        // passphrase that came too late still unlocks: the daemon's unlock notice refreshes the list.
+        if self.session.unlock != UnlockStatus::Checking {
+            return vec![];
+        }
+        match result {
+            Ok(()) => {
+                self.session.unlock = UnlockStatus::Idle;
+                let mut effects = vec![Effect::ClearPassphrase];
+                if self.session.visible && !self.session.busy {
+                    effects.extend(self.search());
+                }
+                effects
+            }
+            Err(failure) => {
+                // A wrong passphrase is typed again from scratch; after a timeout or a lost
+                // connection the right one is still in the box.
+                let retype = failure == UnlockFailure::WrongPassphrase;
+                self.session.unlock = UnlockStatus::Failed(failure);
+                if retype {
+                    vec![Effect::ClearPassphrase]
+                } else {
+                    vec![]
+                }
+            }
+        }
+    }
+
     pub(super) fn on_live(&mut self, live: Live) -> Effects {
         match live {
             Live::ContentLocked => self.drop_content(),
@@ -159,7 +210,9 @@ impl PanelState {
     fn drop_content(&mut self) -> Effects {
         self.search.revision += 1;
         self.search.loading = false;
+        let was_locked = self.search.locked;
         self.search.locked = true;
+        self.search.lock_known = true;
         self.search.disconnected = None;
         self.menu = None;
         self.search.items.clear();
@@ -172,7 +225,7 @@ impl PanelState {
         self.catalog.members.clear();
         self.session.message = None;
         self.search.hovered = None;
-        vec![
+        let mut effects = vec![
             Effect::CancelSearch,
             Effect::CancelReconnect,
             Effect::ClearImages,
@@ -180,7 +233,11 @@ impl PanelState {
             Effect::CancelPreview,
             Effect::ClearPreviewAnchor,
             Effect::HidePreviewWindow,
-        ]
+        ];
+        if !was_locked {
+            effects.extend(self.enter_locked());
+        }
+        effects
     }
 
     pub(super) fn on_options(&mut self, result: Result<Box<Options>, ServiceError>) -> Effects {

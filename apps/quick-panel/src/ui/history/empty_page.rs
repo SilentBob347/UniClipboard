@@ -11,11 +11,7 @@ impl Panel {
         let muted = theme.muted_foreground;
         let searching = !self.state.search.filters.query.trim().is_empty()
             || !self.state.search.filters.chips().is_empty();
-        let kind = classify(
-            self.state.search.locked,
-            self.state.search.disconnected.is_some(),
-            searching,
-        );
+        let kind = classify(self.state.search.disconnected.is_some(), searching);
         let hint = |keys: &'static str, label: &'static str| {
             div()
                 .flex()
@@ -31,11 +27,6 @@ impl Panel {
                 IconName::Inbox,
                 text::t().first_use_title.to_string(),
                 text::t().first_use_hint.to_string(),
-            ),
-            Empty::Locked => (
-                IconName::Asterisk,
-                text::t().locked_title.to_string(),
-                text::t().locked_hint_gui.to_string(),
             ),
             Empty::Disconnected => (
                 IconName::TriangleAlert,
@@ -95,11 +86,6 @@ impl Panel {
                             .child(text::t().summon_anytime)
                             .child(keycap(shortcut, cx)),
                     )
-                    .child(hint("esc", text::t().close));
-            }
-            Empty::Locked => {
-                page = page
-                    .child(hint("⏎", text::t().unlock))
                     .child(hint("esc", text::t().close));
             }
             Empty::Disconnected => {

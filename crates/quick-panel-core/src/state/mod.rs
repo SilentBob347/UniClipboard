@@ -26,7 +26,7 @@ use crate::actions::Row;
 use crate::empty_page::Relaxation;
 use crate::ports::{
     Capabilities, EntryAction, HostRequest, ImagePayload, Live, Options, PasteTarget,
-    PlatformError, PreviewData, SearchFailure, ServiceError,
+    PlatformError, PreviewData, SearchFailure, Secret, ServiceError, UnlockFailure,
 };
 use crate::query::filters::{self, Filters};
 use crate::selection::Selection;
@@ -71,6 +71,8 @@ pub struct Ctx<'a> {
     pub capabilities: Capabilities,
     /// The text in the search box.
     pub input: &'a str,
+    /// The text in the passphrase box of the locked page, a box of its own.
+    pub passphrase: &'a str,
     /// An input method is composing text in the search box.
     pub composing: bool,
     /// The search box has selected text.
@@ -119,6 +121,10 @@ pub enum Effect {
         revision: u64,
         queries: Vec<Filters>,
     },
+    /// Empties the passphrase box of the locked page.
+    ClearPassphrase,
+    /// Checks the passphrase with the daemon and reports [`Event::UnlockDone`].
+    Unlock(Secret),
     ScheduleReconnect(Duration),
     CancelReconnect,
     LoadOptions,
@@ -187,6 +193,9 @@ pub enum Event {
     OptionsLoaded(Result<Box<Options>, ServiceError>),
     Live(Live),
     ReconnectDue,
+    /// The passphrase box changed.
+    PassphraseChanged,
+    UnlockDone(Result<(), UnlockFailure>),
     PreviewDue {
         id: String,
         kind: String,
@@ -234,6 +243,17 @@ pub struct Session {
     /// An action on an entry is running; input is ignored meanwhile.
     pub busy: bool,
     pub message: Option<String>,
+    /// Where entering the passphrase on the locked page stands.
+    pub unlock: UnlockStatus,
+}
+
+/// The passphrase check on the locked page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnlockStatus {
+    Idle,
+    /// The daemon is checking; input is ignored meanwhile.
+    Checking,
+    Failed(UnlockFailure),
 }
 
 pub struct Search {
@@ -244,6 +264,8 @@ pub struct Search {
     pub revision: u64,
     pub loading: bool,
     pub locked: bool,
+    /// The daemon has said at least once whether the content is locked.
+    pub lock_known: bool,
     /// Failed attempts to reach the daemon since it last answered.
     pub disconnected: Option<u32>,
     pub selection: Selection,
@@ -304,6 +326,7 @@ impl PanelState {
                 blur_grace_until: None,
                 busy: false,
                 message: None,
+                unlock: UnlockStatus::Idle,
             },
             search: Search {
                 filters: Filters::default(),
@@ -312,6 +335,7 @@ impl PanelState {
                 revision: 0,
                 loading: false,
                 locked: false,
+                lock_known: false,
                 disconnected: None,
                 selection: Selection::default(),
                 hovered: None,
@@ -337,6 +361,12 @@ impl PanelState {
         let mut effects = vec![Effect::Reposition, Effect::LoadOptions];
         effects.extend(self.search());
         effects
+    }
+
+    /// The first answer about the lock is still on its way. Neither the search page nor the
+    /// locked page may be drawn yet: whichever it is, the other one would flash first.
+    pub fn awaiting_lock_state(&self) -> bool {
+        !self.search.lock_known && self.search.loading
     }
 
     /// The entry the selection or the pointer is on.
@@ -392,6 +422,13 @@ impl PanelState {
             Event::OptionsLoaded(result) => self.on_options(result),
             Event::Live(live) => self.on_live(live),
             Event::ReconnectDue => self.on_reconnect_due(),
+            Event::PassphraseChanged => {
+                if matches!(self.session.unlock, UnlockStatus::Failed(_)) {
+                    self.session.unlock = UnlockStatus::Idle;
+                }
+                vec![]
+            }
+            Event::UnlockDone(result) => self.on_unlock_done(result),
             Event::PreviewDue { id, kind } => self.on_preview_due(id, kind),
             Event::PreviewLoaded { id, result } => self.on_preview_loaded(id, result),
             Event::Restored {

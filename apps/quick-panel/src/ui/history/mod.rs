@@ -103,8 +103,8 @@ impl Panel {
         let list = div()
             .on_children_prepainted(move |_, window, cx| {
                 let tracker = anchor_tracker.clone();
-                window.defer(cx, move |window, cx| {
-                    let _ = tracker.update(cx, |this, cx| this.update_preview_anchor(window, cx));
+                window.defer(cx, move |_, cx| {
+                    let _ = tracker.update(cx, |this, cx| this.update_preview_anchor(cx));
                 });
             })
             .id("history-list")
@@ -156,13 +156,7 @@ impl Panel {
             .overflow_hidden()
             .child(self.search_row(cx))
             .child(list);
-        if let Some(message) = self
-            .state
-            .session
-            .message
-            .as_ref()
-            .filter(|_| !self.state.search.locked)
-        {
+        if let Some(message) = self.state.session.message.as_ref() {
             card = card.child(
                 div()
                     .flex_shrink_0()

@@ -53,6 +53,8 @@ struct Fixture {
     now: Instant,
     target: FakeTarget,
     input: String,
+    /// What is typed on the locked page, which has a box of its own.
+    passphrase: String,
     capabilities: Capabilities,
 }
 
@@ -62,6 +64,7 @@ impl Fixture {
             now: Instant::now(),
             target: FakeTarget::ready(),
             input: String::new(),
+            passphrase: String::new(),
             capabilities: FULL,
         }
     }
@@ -72,6 +75,7 @@ impl Fixture {
             target: &self.target,
             capabilities: self.capabilities,
             input: &self.input,
+            passphrase: &self.passphrase,
             composing: false,
             selecting: false,
             today: NaiveDate::from_ymd_opt(2026, 9, 30).unwrap(),
@@ -766,27 +770,226 @@ fn deleting_needs_the_shifted_shortcut() {
     ));
 }
 
-#[test]
-fn the_locked_page_opens_the_main_window_on_enter() {
+fn locked_panel() -> (PanelState, Fixture) {
     let (mut state, fixture) = open_panel(&["a"]);
-    state.search.locked = true;
-    let result = key(&mut state, &fixture, "enter", plain());
+    state.on_event(Event::Live(Live::ContentLocked), &fixture.ctx());
+    (state, fixture)
+}
+
+fn type_passphrase(state: &mut PanelState, fixture: &mut Fixture, value: &str) -> Effects {
+    fixture.passphrase = value.into();
+    state.on_event(Event::PassphraseChanged, &fixture.ctx())
+}
+
+fn submit(state: &mut PanelState, fixture: &Fixture) -> KeyResult {
+    key(state, fixture, "enter", plain())
+}
+
+#[test]
+fn enter_on_the_locked_page_sends_the_passphrase_not_the_search_text() {
+    let (mut state, mut fixture) = locked_panel();
+    fixture.input = "invoice".into();
+    type_passphrase(&mut state, &mut fixture, "correct horse");
+    let result = submit(&mut state, &fixture);
+    assert!(matches!(
+        result.effects.as_slice(),
+        [Effect::Unlock(secret)] if secret.expose() == "correct horse"
+    ));
+    assert_eq!(state.session.unlock, UnlockStatus::Checking);
+}
+
+#[test]
+fn enter_on_the_locked_page_without_a_passphrase_does_nothing() {
+    let (mut state, mut fixture) = locked_panel();
+    fixture.input = "invoice".into();
+    let result = submit(&mut state, &fixture);
+    assert!(result.effects.is_empty());
+    assert_eq!(state.session.unlock, UnlockStatus::Idle);
+}
+
+#[test]
+fn a_passphrase_being_checked_is_not_sent_twice() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "secret");
+    submit(&mut state, &fixture);
+    let again = submit(&mut state, &fixture);
+    assert!(!has(&again.effects, |e| matches!(e, Effect::Unlock(_))));
+}
+
+#[test]
+fn the_locked_page_leaves_the_search_alone() {
+    let (mut state, mut fixture) = open_panel(&["a"]);
+    fixture.input = "invoice".into();
+    state.on_event(Event::InputChanged("invoice".into()), &fixture.ctx());
+    state.on_event(Event::Live(Live::ContentLocked), &fixture.ctx());
+    assert_eq!(state.search.filters.query, "invoice");
+    let revision = state.search.revision;
+    type_passphrase(&mut state, &mut fixture, "hunter2");
+    assert_eq!(state.search.filters.query, "invoice");
+    assert_eq!(state.search.revision, revision);
+}
+
+#[test]
+fn the_keys_of_the_search_page_do_nothing_on_the_locked_page() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "abc");
+    for name in ["up", "down", "left", "right", "tab", "backspace", "k"] {
+        let modifiers = if name == "k" { command() } else { plain() };
+        let result = key(&mut state, &fixture, name, modifiers);
+        assert!(!result.consumed, "{name}");
+        assert!(result.effects.is_empty(), "{name}");
+    }
+    assert!(!state.on_copy(&fixture.ctx()).consumed);
+    assert!(!state.on_backspace(&fixture.ctx()).consumed);
+    assert!(!state.on_clear_all().consumed);
+    assert!(state.menu.is_none());
+}
+
+#[test]
+fn tab_on_the_locked_page_does_not_change_the_search_type() {
+    let (mut state, fixture) = locked_panel();
+    let before = state.search.filters.types.clone();
+    assert!(state.tab(false, &fixture.ctx()).is_empty());
+    assert_eq!(state.search.filters.types, before);
+}
+
+#[test]
+fn escape_clears_a_typed_passphrase_first_and_then_closes() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "abc");
+    let first = key(&mut state, &fixture, "escape", plain());
+    assert!(matches!(
+        first.effects.as_slice(),
+        [Effect::ClearPassphrase]
+    ));
+    fixture.passphrase.clear();
+    let second = key(&mut state, &fixture, "escape", plain());
+    assert!(matches!(second.effects.as_slice(), [Effect::HideWindow]));
+}
+
+#[test]
+fn becoming_locked_empties_the_passphrase_box() {
+    let (mut state, fixture) = open_panel(&["a"]);
+    let effects = state.on_event(Event::Live(Live::ContentLocked), &fixture.ctx());
+    assert!(has(&effects, |e| matches!(e, Effect::ClearPassphrase)));
+}
+
+#[test]
+fn a_wrong_passphrase_stays_locked_and_empties_the_box() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "nope");
+    submit(&mut state, &fixture);
+    let revision = state.search.revision;
+    let effects = state.on_event(
+        Event::UnlockDone(Err(UnlockFailure::WrongPassphrase)),
+        &fixture.ctx(),
+    );
+    assert!(state.search.locked);
+    assert_eq!(
+        state.session.unlock,
+        UnlockStatus::Failed(UnlockFailure::WrongPassphrase)
+    );
+    assert!(has(&effects, |e| matches!(e, Effect::ClearPassphrase)));
+    assert_eq!(state.search.revision, revision);
+}
+
+#[test]
+fn a_failure_that_is_not_the_passphrase_keeps_what_was_typed() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "right but slow");
+    submit(&mut state, &fixture);
+    let effects = state.on_event(
+        Event::UnlockDone(Err(UnlockFailure::Timeout)),
+        &fixture.ctx(),
+    );
+    assert!(!has(&effects, |e| matches!(e, Effect::ClearPassphrase)));
+    assert_eq!(
+        state.session.unlock,
+        UnlockStatus::Failed(UnlockFailure::Timeout)
+    );
+}
+
+#[test]
+fn editing_after_a_failure_clears_it() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "x");
+    submit(&mut state, &fixture);
+    state.on_event(
+        Event::UnlockDone(Err(UnlockFailure::Timeout)),
+        &fixture.ctx(),
+    );
+    assert!(matches!(state.session.unlock, UnlockStatus::Failed(_)));
+    type_passphrase(&mut state, &mut fixture, "xy");
+    assert_eq!(state.session.unlock, UnlockStatus::Idle);
+}
+
+#[test]
+fn a_right_passphrase_empties_the_box_and_looks_at_the_history_again() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "right");
+    submit(&mut state, &fixture);
+    let effects = state.on_event(Event::UnlockDone(Ok(())), &fixture.ctx());
+    assert_eq!(state.session.unlock, UnlockStatus::Idle);
+    assert!(has(&effects, |e| matches!(e, Effect::ClearPassphrase)));
+    assert!(has(&effects, |e| matches!(e, Effect::Search { .. })));
+}
+
+#[test]
+fn opening_the_panel_again_forgets_an_earlier_failure() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "x");
+    submit(&mut state, &fixture);
+    state.on_event(
+        Event::UnlockDone(Err(UnlockFailure::WrongPassphrase)),
+        &fixture.ctx(),
+    );
+    state.on_event(Event::WindowHidden, &fixture.ctx());
+    let effects = state.show(&fixture.ctx());
+    assert_eq!(state.session.unlock, UnlockStatus::Idle);
+    assert!(has(&effects, |e| matches!(e, Effect::ClearPassphrase)));
+}
+
+#[test]
+fn an_unlock_answer_from_an_earlier_opening_is_ignored() {
+    let (mut state, mut fixture) = locked_panel();
+    type_passphrase(&mut state, &mut fixture, "old");
+    submit(&mut state, &fixture);
+    state.on_event(Event::WindowHidden, &fixture.ctx());
+    state.show(&fixture.ctx());
+    type_passphrase(&mut state, &mut fixture, "new");
+    let late = state.on_event(
+        Event::UnlockDone(Err(UnlockFailure::WrongPassphrase)),
+        &fixture.ctx(),
+    );
+    assert!(late.is_empty(), "{late:?}");
+    assert_eq!(state.session.unlock, UnlockStatus::Idle);
+    let late_ok = state.on_event(Event::UnlockDone(Ok(())), &fixture.ctx());
+    assert!(late_ok.is_empty(), "{late_ok:?}");
+}
+
+#[test]
+fn an_effect_never_prints_the_passphrase() {
+    let effect = Effect::Unlock(Secret::new("hunter2"));
+    assert!(!format!("{effect:?}").contains("hunter2"));
+}
+
+#[test]
+fn the_main_window_stays_reachable_from_the_locked_page() {
+    let (mut state, fixture) = locked_panel();
+    let result = key(
+        &mut state,
+        &fixture,
+        "o",
+        Modifiers {
+            platform: true,
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
     assert!(matches!(
         result.effects.as_slice(),
         [Effect::HostRequest(HostRequest::ShowMainWindow)]
     ));
-    let host = |state: &mut PanelState, result| {
-        state.on_event(Event::HostRequested(result), &fixture.ctx())
-    };
-    assert!(matches!(
-        host(&mut state, Ok(())).as_slice(),
-        [Effect::HideWindow]
-    ));
-    host(
-        &mut state,
-        Err("此功能需要在 UniClipboard 应用内使用。".into()),
-    );
-    assert!(state.session.message.is_some());
 }
 
 #[test]
@@ -1070,4 +1273,57 @@ fn what_the_daemon_lists_replaces_the_catalog_and_reaches_the_shell() {
     );
     assert!(effects.is_empty());
     assert_eq!(state.catalog.tags, ["work"]);
+}
+
+#[test]
+fn no_page_is_drawn_until_the_daemon_has_said_whether_content_is_locked() {
+    let fixture = Fixture::new();
+    let mut state = PanelState::new(fixture.now);
+    state.show(&fixture.ctx());
+    assert!(state.awaiting_lock_state());
+    let revision = state.search.revision;
+    state.on_event(
+        Event::SearchDone {
+            revision,
+            result: Err(SearchFailure::Locked),
+        },
+        &fixture.ctx(),
+    );
+    assert!(!state.awaiting_lock_state());
+}
+
+#[test]
+fn an_unlocked_answer_also_settles_the_lock_state() {
+    let (mut state, fixture) = open_panel(&["a"]);
+    assert!(!state.awaiting_lock_state());
+    state.on_event(Event::WindowHidden, &fixture.ctx());
+    state.show(&fixture.ctx());
+    assert!(state.search.loading);
+    assert!(!state.awaiting_lock_state());
+}
+
+#[test]
+fn a_lock_notice_settles_the_lock_state_before_any_search_answers() {
+    let fixture = Fixture::new();
+    let mut state = PanelState::new(fixture.now);
+    state.show(&fixture.ctx());
+    state.on_event(Event::Live(Live::ContentLocked), &fixture.ctx());
+    assert!(!state.awaiting_lock_state());
+}
+
+#[test]
+fn an_unreachable_daemon_says_nothing_about_the_lock() {
+    let fixture = Fixture::new();
+    let mut state = PanelState::new(fixture.now);
+    state.show(&fixture.ctx());
+    let revision = state.search.revision;
+    state.on_event(
+        Event::SearchDone {
+            revision,
+            result: Err(SearchFailure::Disconnected),
+        },
+        &fixture.ctx(),
+    );
+    assert!(!state.search.lock_known);
+    assert!(!state.awaiting_lock_state(), "the disconnected page shows");
 }

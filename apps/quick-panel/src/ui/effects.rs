@@ -5,7 +5,7 @@
 //! [`Event`], and the state answers with the next effects.
 
 use super::*;
-use quick_panel_core::ports::{SearchFailure, ServiceError};
+use quick_panel_core::ports::{SearchFailure, ServiceError, UnlockFailure};
 use quick_panel_core::state::timing;
 use std::collections::VecDeque;
 use tracing::Instrument;
@@ -20,7 +20,27 @@ impl Panel {
             }
         }
         self.release_stale_preview_image();
+        self.sync_focus(window, cx);
         cx.notify();
+    }
+
+    /// The focus follows the page: the passphrase box while locked, the search box otherwise.
+    fn sync_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let locked = self.state.search.locked;
+        if locked == self.focus_on_lock_page {
+            return;
+        }
+        self.focus_on_lock_page = locked;
+        self.focus_active_input(window, cx);
+    }
+
+    fn focus_active_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = if self.state.search.locked {
+            &self.passphrase
+        } else {
+            &self.input
+        };
+        input.update(cx, |input, cx| input.focus(window, cx));
     }
 
     /// Gives back every bitmap and stops the work that would make more.
@@ -79,7 +99,10 @@ impl Panel {
             Effect::HidePreviewWindow => self.hide_preview(cx),
             Effect::ResetInput => self.set_input("", window, cx),
             Effect::SetInput(value) => self.set_input(&value, window, cx),
-            Effect::FocusInput => self.input.update(cx, |input, cx| input.focus(window, cx)),
+            Effect::FocusInput => self.focus_active_input(window, cx),
+            Effect::ClearPassphrase => self.passphrase.update(cx, |input, cx| {
+                input.set_value(String::new(), window, cx);
+            }),
             Effect::ScrollListToTop => self
                 .scroll
                 .set_offset(gpui::point(gpui::px(0.), gpui::px(0.))),
@@ -98,6 +121,22 @@ impl Panel {
             Effect::CancelSearch => self.tasks.search = None,
             Effect::CountRelaxations { revision, queries } => {
                 self.count_relaxations(revision, queries, window, cx);
+            }
+            Effect::Unlock(passphrase) => {
+                let runtime = self.runtime.clone();
+                let history = self.history.clone();
+                self.tasks.unlock = Some(cx.spawn_in(window, async move |this, cx| {
+                    let result = runtime
+                        .spawn(
+                            async move { history.unlock(passphrase).await }
+                                .instrument(tracing::info_span!("gpui.unlock")),
+                        )
+                        .await
+                        .unwrap_or(Err(UnlockFailure::Failed));
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.deliver(Event::UnlockDone(result), window, cx);
+                    });
+                }));
             }
             Effect::ScheduleReconnect(delay) => {
                 self.tasks.reconnect = Some(cx.spawn_in(window, async move |this, cx| {
@@ -282,8 +321,8 @@ impl Panel {
     fn set_input(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| {
             input.set_value(value.to_string(), window, cx);
-            input.focus(window, cx);
         });
+        self.focus_active_input(window, cx);
     }
 
     /// Reports the content of the search box to the state after an edit.
@@ -421,9 +460,11 @@ impl Panel {
             self.apply_double_tap_modifier(settings.quick_panel.double_tap_modifier, cx);
             self.general = Some(settings.general.clone());
             if crate::ui::apply_language(settings.general.language.as_deref()) {
-                let placeholder = text::t().search_placeholder;
                 self.input.update(cx, |input, cx| {
-                    input.set_placeholder(placeholder, window, cx);
+                    input.set_placeholder(text::t().search_placeholder, window, cx);
+                });
+                self.passphrase.update(cx, |input, cx| {
+                    input.set_placeholder(text::t().passphrase_placeholder, window, cx);
                 });
             }
         }

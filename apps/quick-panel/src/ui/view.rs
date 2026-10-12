@@ -7,6 +7,22 @@ pub(super) fn units(value: f32) -> gpui::Rems {
 }
 
 impl Panel {
+    /// The window before the daemon has said whether the content is locked: the card alone, so
+    /// that neither the search page nor the locked page flashes first.
+    fn blank_card(&self, cx: &Context<Self>) -> AnyElement {
+        div()
+            .w(units(
+                quick_panel_core::geometry::window_pair::PANEL_WIDTH as f32,
+            ))
+            .h_full()
+            .flex_shrink_0()
+            .rounded(units(platform::WINDOW_CORNER_RADIUS as f32))
+            .border_1()
+            .border_color(cx.theme().border.opacity(0.6))
+            .bg(cx.global::<crate::ui::appearance::Surfaces>().background)
+            .into_any_element()
+    }
+
     /// The image grid: three rows of three equal cells, showing the entries from `grid_top`.
     /// The badge of a cell is the digit that Command plus that digit pastes.
     pub(super) fn image_wall(&self, cx: &Context<Self>) -> AnyElement {
@@ -119,10 +135,9 @@ impl Panel {
                     if let Some(bounds) = bounds.first().copied() {
                         let tracker = bounds_tracker.clone();
                         let id = bounds_id.clone();
-                        window.defer(cx, move |window, cx| {
-                            let _ = tracker.update(cx, |this, cx| {
-                                this.record_image_bounds(id, bounds, window, cx)
-                            });
+                        window.defer(cx, move |_, cx| {
+                            let _ = tracker
+                                .update(cx, |this, cx| this.record_image_bounds(id, bounds, cx));
                         });
                     }
                 })
@@ -457,7 +472,13 @@ impl Render for Panel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let data = self.ctx_data(cx);
         self.state.normalize_suggestion_focus(&data.ctx());
-        let history = self.history_view(cx);
+        let history = if self.state.awaiting_lock_state() {
+            self.blank_card(cx)
+        } else if self.state.search.locked {
+            self.lock_page(cx)
+        } else {
+            self.history_view(cx)
+        };
         div()
             .size_full()
             .text_color(cx.theme().foreground)
