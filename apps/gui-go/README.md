@@ -33,6 +33,12 @@ bun wails:build                  # 构建本地应用，不启动
 bun wails:build --release        # Windows 发布构建，并生成便携 ZIP
 ```
 
+`bun wails:dev` 与 `bun wails:dev:profile <profile>` 支持 macOS、Windows 和 Linux。Linux 需要 Go、Rust、Node.js、Bun，以及可通过 `pkg-config` 查找的 GTK 3 和 WebKitGTK 4.1 开发库；前端自动选择 Linux 平台组件，使用 Vite 热更新。
+
+Linux 启动环境未设置 `DISPLAY` 和 `WAYLAND_DISPLAY` 时，开发脚本从 systemd 用户服务管理器读取桌面连接变量；找不到图形会话则在编译前退出并提示从桌面终端运行。已设置显示变量时使用当前终端的配置。
+
+Hyprland（包括 Omarchy）和 niri 会话中，主窗口隐藏应用绘制的最小化、最大化和关闭按钮，窗口操作交给合成器。宿主通过 `XDG_CURRENT_DESKTOP`、`HYPRLAND_INSTANCE_SIGNATURE` 或 `NIRI_SOCKET` 识别环境。
+
 `bun wails:build` 复用现有平台构建脚本，构建前端、daemon、原生快捷面板、CLI 与 GUI。Windows 产物位于 `target/gui-go/windows-production/`（入口 `gui-go.exe`），macOS 产物为 `target/gui-go/UniClipboardGo.app`。该命令生成本地应用，不生成安装包；Go 使用 `production` 标签，Rust 沿用现有脚本的 debug 构建。Windows 需要 Python，macOS 需要 Bash 与 Python 3。
 
 Windows 上使用 `bun wails:build --release` 构建发布便携版：Rust 使用 `cargo build --release`，Go 使用 `production,release` 标签并移除调试符号，前端嵌入 GUI，无需 Vite。产物位于 `target/gui-go/windows-release/`，包括 `UniClipboard.exe`、daemon、原生快捷面板、CLI、构建清单与 `UniClipboard_<版本>_<x64|arm64>-portable.zip`。便携 ZIP 复用发布流水线的文件布局，包含 `portable.dat`，解压后数据保存在程序旁的 `data/`；该本地命令不进行 Authenticode 签名，也不生成安装包。启动发布版前需清除 `UC_PROFILE` 和 `UNICLIPBOARD_ENV=development` 等开发环境设置。macOS 暂不支持此命令的 `--release` 参数。
@@ -349,7 +355,7 @@ docker build --platform linux/arm64 -t uc-gui-go-linux-build:17c -f apps/gui-go/
 go run ./apps/gui-go/e2e/linux_contract <dir>      # 在 apps/gui-go 目录下执行
 
 # 宿主机：E2E 前端包（VITE_GUI_GO_E2E=1），然后在容器里构建 daemon/CLI/GUI 并跑 Xvfb 场景
-VITE_GUI_GO_E2E=1 bun --bun run --cwd apps/gui-go/frontend build
+VITE_GUI_GO_E2E=1 UC_UI_PLATFORM=linux bun --bun run --cwd apps/gui-go/frontend build
 apps/gui-go/e2e/linux/run.sh build          # 容器内：cargo 构建 daemon、go 构建 CLI 与 GUI（gtk3,e2e）
 apps/gui-go/e2e/linux/run.sh xvfb <dir>     # 容器内：Xvfb + dbus-run-session + linux_xvfb_run.py
 apps/gui-go/e2e/linux/run.sh package <dir>  # 容器内：生产前端包 + package_linux.py
@@ -363,7 +369,7 @@ apps/gui-go/e2e/linux/run.sh package <dir>  # 容器内：生产前端包 + pack
 # 任意 Linux 主机或 Docker 主机，原生平台（UC_DOCKER_PLATFORM=linux/amd64 或 linux/arm64）
 docker build --build-arg BASE_IMAGE=debian:bookworm --build-arg TARGETARCH=arm64 -f apps/gui-go/e2e/linux/Dockerfile.package-build -t uc-package-build:ci apps/gui-go/e2e/linux
 UC_LINUX_IMAGE=uc-package-build:ci apps/gui-go/e2e/linux/run.sh daemon-release            # daemon 与 build-evidence.txt
-bun --bun run --cwd apps/gui-go/frontend build                                                      # 生产前端包
+UC_UI_PLATFORM=linux bun --bun run --cwd apps/gui-go/frontend build                              # 生产前端包
 UC_LINUX_IMAGE=uc-package-build:ci apps/gui-go/e2e/linux/run.sh package-release <outdir>   # 四个命名包与 package-manifest.json
 UC_EXPECT_HEAD=$(git rev-parse HEAD) UC_LINUX_IMAGE=uc-package-build:ci apps/gui-go/e2e/linux/run.sh verify-packages <outdir>/packages <uploaddir>
 ```
@@ -491,7 +497,7 @@ UC_EXPECT_HEAD=$(git rev-parse HEAD) UC_LINUX_IMAGE=uc-package-build:ci apps/gui
 docker build --platform linux/arm64 -t uc-gui-go-linux-build:17c2 -f apps/gui-go/e2e/linux/Dockerfile.17c2 apps/gui-go/e2e/linux
 
 # 宿主机：E2E 前端包，然后在 :17c2 容器里构建 GUI（run.sh 默认镜像仍是 :17c，要用环境变量指定）
-VITE_GUI_GO_E2E=1 bun --bun run --cwd apps/gui-go/frontend build
+VITE_GUI_GO_E2E=1 UC_UI_PLATFORM=linux bun --bun run --cwd apps/gui-go/frontend build
 UC_LINUX_IMAGE=uc-gui-go-linux-build:17c2 SKIP_DAEMON=1 apps/gui-go/e2e/linux/run.sh build
 
 # 无头 sway 场景（每次用新的输出目录；加 UC_WAYLAND_RUN_ARGS=--wayland-debug 会保存客户端协议轨迹，目录很大）
