@@ -26,8 +26,10 @@ struct Request {
     kind: Option<String>,
     failure: Option<String>,
     count: Option<usize>,
+    held: Option<bool>,
 }
 
+/// Parse the diagnostic event name accepted by the isolated E2E control endpoint.
 fn kind(name: &str) -> Option<DevSpaceWorkEventKind> {
     match name {
         "final_confirmation_connection_failed" => {
@@ -65,6 +67,17 @@ fn kind(name: &str) -> Option<DevSpaceWorkEventKind> {
         }
         "group_update_applied" => Some(DevSpaceWorkEventKind::GroupUpdateApplied),
         "group_update_tampered" => Some(DevSpaceWorkEventKind::GroupUpdateTampered),
+        "group_update_missing_predecessor_observed" => {
+            Some(DevSpaceWorkEventKind::GroupUpdateMissingPredecessorObserved)
+        }
+        "group_update_current_wire_sent" => Some(DevSpaceWorkEventKind::GroupUpdateCurrentWireSent),
+        "group_update_legacy_wire_sent" => Some(DevSpaceWorkEventKind::GroupUpdateLegacyWireSent),
+        "group_update_current_wire_acknowledged" => {
+            Some(DevSpaceWorkEventKind::GroupUpdateCurrentWireAcknowledged)
+        }
+        "group_update_legacy_wire_acknowledged" => {
+            Some(DevSpaceWorkEventKind::GroupUpdateLegacyWireAcknowledged)
+        }
         "legacy_receiver_rejection_injected" => {
             Some(DevSpaceWorkEventKind::LegacyReceiverRejectionInjected)
         }
@@ -72,6 +85,7 @@ fn kind(name: &str) -> Option<DevSpaceWorkEventKind> {
     }
 }
 
+/// Serialize an Engine diagnostic event using the E2E control endpoint names.
 fn event(value: DevSpaceWorkEvent) -> Value {
     let name = match value.kind {
         DevSpaceWorkEventKind::FinalConfirmationConnectionFailed => {
@@ -103,6 +117,17 @@ fn event(value: DevSpaceWorkEvent) -> Value {
         }
         DevSpaceWorkEventKind::GroupUpdateApplied => "group_update_applied",
         DevSpaceWorkEventKind::GroupUpdateTampered => "group_update_tampered",
+        DevSpaceWorkEventKind::GroupUpdateMissingPredecessorObserved => {
+            "group_update_missing_predecessor_observed"
+        }
+        DevSpaceWorkEventKind::GroupUpdateCurrentWireSent => "group_update_current_wire_sent",
+        DevSpaceWorkEventKind::GroupUpdateLegacyWireSent => "group_update_legacy_wire_sent",
+        DevSpaceWorkEventKind::GroupUpdateCurrentWireAcknowledged => {
+            "group_update_current_wire_acknowledged"
+        }
+        DevSpaceWorkEventKind::GroupUpdateLegacyWireAcknowledged => {
+            "group_update_legacy_wire_acknowledged"
+        }
         DevSpaceWorkEventKind::LegacyReceiverRejectionInjected => {
             "legacy_receiver_rejection_injected"
         }
@@ -150,6 +175,10 @@ async fn space_work(
                 .ok_or(StatusCode::BAD_REQUEST)?,
         },
         "clear_membership_history_failures" => DevOperation::ClearMembershipHistoryFailures,
+        "set_membership_history_held" => DevOperation::SetMembershipHistoryHeld {
+            held: request.held.ok_or(StatusCode::BAD_REQUEST)?,
+            peer: None,
+        },
         "set_group_update_receive_fault" => DevOperation::SetGroupUpdateReceiveFault {
             fault: match request.failure.as_deref() {
                 Some("not_ready") => Some(DevGroupUpdateReceiveFault::NotReady),
@@ -200,6 +229,7 @@ async fn space_work(
         DevOperationResult::MembershipHistoryFailuresCleared { remaining } => {
             json!({ "remaining": remaining })
         }
+        DevOperationResult::MembershipHistoryHoldSet => json!({ "held": request.held }),
         DevOperationResult::GroupUpdateReceiveFaultSet
         | DevOperationResult::GroupUpdateTamperArmed
         | DevOperationResult::LegacyReceiverRejectionArmed => json!({ "status": "armed" }),
