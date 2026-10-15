@@ -17,7 +17,8 @@ use utoipa;
 
 use crate::api::dto::error::{log_facade_failure, ApiError};
 use crate::api::server::{
-    DaemonApiState, DaemonDiagnosticArchive, DaemonDiagnosticError, DaemonDiagnosticsRuntime,
+    DaemonApiState, DaemonDiagnosticArchive, DaemonDiagnosticArchiveError, DaemonDiagnosticError,
+    DaemonDiagnosticsRuntime,
 };
 
 pub fn router() -> Router<DaemonApiState> {
@@ -122,11 +123,31 @@ pub async fn get_debug_status_handler(
             "engine returned an unexpected diagnostics result",
         ));
     };
-    Ok(Json(ApiEnvelope::now(DebugStatusDto {
-        debug_mode: status.debug_mode,
-        effective_log_profile: status.effective_log_profile,
-        restart_required: status.restart_required,
-    })))
+    Ok(Json(ApiEnvelope::now(debug_status_dto(
+        status.debug_mode,
+        status.effective_log_profile,
+        status.restart_required,
+        uc_observability::installed_log_profile(),
+    ))))
+}
+
+/// Debug Mode status as the user can act on it. `debug_mode` is the persisted
+/// setting; the log profile is what this process actually installed, which the
+/// setting only reaches after a restart (and which an environment override can
+/// replace). The installed profile wins over the Engine's computed one.
+fn debug_status_dto(
+    debug_mode: bool,
+    engine_log_profile: String,
+    restart_required: bool,
+    installed_log_profile: Option<&str>,
+) -> DebugStatusDto {
+    DebugStatusDto {
+        debug_mode,
+        effective_log_profile: installed_log_profile
+            .map(str::to_owned)
+            .unwrap_or(engine_log_profile),
+        restart_required,
+    }
 }
 
 #[utoipa::path(
@@ -175,7 +196,8 @@ pub async fn update_debug_mode_handler(
     request_body = LogExportRequestDto,
     responses(
         (status = 200, description = "Logs exported to Downloads", body = LogExportEnvelope),
-        (status = 500, description = "Internal server error", body = ApiErrorResponse)
+        (status = 500, description = "Export failed; `details.cause` is source_read_failed, archive_write_failed or unknown", body = ApiErrorResponse),
+        (status = 503, description = "Export destination or local Engine diagnostics unavailable; `details.cause` may be destination_unavailable", body = ApiErrorResponse)
     )
 )]
 #[instrument(name = "api.diagnostics.log_export", level = "info", skip(state, payload), fields(since_hours = payload.since_hours))]
@@ -208,7 +230,35 @@ async fn prepare_and_export(
     archive
         .export(since_hours, preparation)
         .await
-        .map_err(|_| ApiError::internal("diagnostic archive export failed"))
+        .map_err(archive_export_error)
+}
+
+/// Stable error for a failed archive export: `code` plus the cause in
+/// `details`, and one ERROR record with the same cause.
+fn archive_export_error(error: DaemonDiagnosticArchiveError) -> ApiError {
+    let (cause, api) = match error {
+        DaemonDiagnosticArchiveError::SourceReadFailed => (
+            "source_read_failed",
+            ApiError::internal("diagnostic logs could not be read"),
+        ),
+        DaemonDiagnosticArchiveError::ArchiveWriteFailed => (
+            "archive_write_failed",
+            ApiError::internal("diagnostic archive could not be written"),
+        ),
+        DaemonDiagnosticArchiveError::DestinationUnavailable => (
+            "destination_unavailable",
+            ApiError::service_unavailable("diagnostic export destination is unavailable"),
+        ),
+        DaemonDiagnosticArchiveError::Unknown => (
+            "unknown",
+            ApiError::internal("diagnostic archive export failed"),
+        ),
+    };
+    let api = api
+        .with_code("diagnostic_export_failed")
+        .with_details(serde_json::json!({ "cause": cause }));
+    log_facade_failure("diagnostics", "log_export", cause, api.status, &api.message);
+    api
 }
 
 fn diagnostics_runtime(state: &DaemonApiState) -> Result<&dyn DaemonDiagnosticsRuntime, ApiError> {
@@ -306,7 +356,7 @@ mod tests {
             &self,
             _since_hours: Option<u32>,
             engine_preparation: DiagnosticExportPreparationDto,
-        ) -> anyhow::Result<LogExportResultDto> {
+        ) -> Result<LogExportResultDto, DaemonDiagnosticArchiveError> {
             assert!(self.prepared.load(Ordering::SeqCst));
             assert_eq!(engine_preparation.status.run_id, "run-1");
             Ok(LogExportResultDto {
@@ -319,6 +369,7 @@ mod tests {
                     unreadable_files: Vec::new(),
                     truncated_files: Vec::new(),
                     concurrent_writes_possible: true,
+                    missing_sources: Vec::new(),
                 },
             })
         }
@@ -338,6 +389,160 @@ mod tests {
 
         assert_eq!(result.engine_preparation.status.run_id, "run-1");
         assert_eq!(result.collection.included_files.len(), 1);
+    }
+
+    #[test]
+    fn debug_status_reports_the_profile_the_process_installed() {
+        // Debug Mode is saved but the process still runs the production profile.
+        let status = debug_status_dto(true, "debug".to_owned(), true, Some("prod"));
+        assert!(status.debug_mode);
+        assert_eq!(status.effective_log_profile, "prod");
+        assert!(status.restart_required);
+
+        // Without an installed profile (host logging not up) the Engine value
+        // is all there is.
+        let status = debug_status_dto(false, "prod".to_owned(), false, None);
+        assert_eq!(status.effective_log_profile, "prod");
+    }
+
+    struct FailingArchive(DaemonDiagnosticArchiveError);
+
+    #[async_trait::async_trait]
+    impl DaemonDiagnosticArchive for FailingArchive {
+        async fn export(
+            &self,
+            _since_hours: Option<u32>,
+            _engine_preparation: DiagnosticExportPreparationDto,
+        ) -> Result<LogExportResultDto, DaemonDiagnosticArchiveError> {
+            Err(self.0)
+        }
+    }
+
+    /// Records of every thread of this test binary, kept in one process-wide
+    /// buffer behind a permanently installed subscriber. A scoped subscriber
+    /// per test races with the other tests' callsite interest caches (the
+    /// ERROR callsite under test is shared), so the subscriber is global and
+    /// each test reads back only its own thread's lines.
+    fn records_of_current_thread(run: impl FnOnce()) -> Vec<String> {
+        use std::io::Write;
+        use std::sync::{Mutex, OnceLock};
+
+        static BUFFER: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+        #[derive(Clone)]
+        struct Shared(Arc<Mutex<Vec<u8>>>);
+        impl Write for Shared {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("buffer").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Shared {
+            type Writer = Shared;
+            fn make_writer(&'a self) -> Shared {
+                self.clone()
+            }
+        }
+
+        let buffer = BUFFER.get_or_init(|| {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(Shared(Arc::clone(&buffer)))
+                .with_ansi(false)
+                .with_thread_ids(true)
+                .finish();
+            // Another test binary component may already own the global default;
+            // the buffer then simply stays empty and the assertion reports it.
+            let _ = tracing::subscriber::set_global_default(subscriber);
+            buffer
+        });
+        let marker = format!("{:?}", std::thread::current().id());
+        let before = buffer.lock().expect("buffer").len();
+        run();
+        let bytes = buffer.lock().expect("buffer")[before..].to_vec();
+        String::from_utf8(bytes)
+            .expect("utf8")
+            .lines()
+            .filter(|line| line.contains(&marker))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn export_failure_cases() -> [(
+        DaemonDiagnosticArchiveError,
+        &'static str,
+        axum::http::StatusCode,
+    ); 4] {
+        [
+            (
+                DaemonDiagnosticArchiveError::SourceReadFailed,
+                "source_read_failed",
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                DaemonDiagnosticArchiveError::ArchiveWriteFailed,
+                "archive_write_failed",
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                DaemonDiagnosticArchiveError::DestinationUnavailable,
+                "destination_unavailable",
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                DaemonDiagnosticArchiveError::Unknown,
+                "unknown",
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_failed_archive_export_names_its_cause() {
+        for (failure, cause, status) in export_failure_cases() {
+            let runtime = RuntimeProbe {
+                prepared: Arc::new(AtomicBool::new(false)),
+            };
+
+            let error = prepare_and_export(&runtime, &FailingArchive(failure), Some(24))
+                .await
+                .expect_err("export fails");
+
+            assert_eq!(error.status, status);
+            assert_eq!(error.code, "diagnostic_export_failed");
+            assert_eq!(error.details, Some(serde_json::json!({ "cause": cause })));
+        }
+    }
+
+    #[test]
+    fn a_failed_archive_export_is_logged_once_with_its_cause() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        for (failure, cause, status) in export_failure_cases() {
+            if !status.is_server_error() {
+                continue;
+            }
+
+            let records = records_of_current_thread(|| {
+                runtime.block_on(async {
+                    let probe = RuntimeProbe {
+                        prepared: Arc::new(AtomicBool::new(false)),
+                    };
+                    let _ = prepare_and_export(&probe, &FailingArchive(failure), Some(24)).await;
+                });
+            });
+
+            let with_cause = records.iter().filter(|line| line.contains(cause)).count();
+            assert_eq!(with_cause, 1, "one record for {cause}: {records:?}");
+            assert!(
+                records.iter().all(|line| !line.contains("/Users")),
+                "no paths in the record: {records:?}"
+            );
+        }
     }
 
     #[test]

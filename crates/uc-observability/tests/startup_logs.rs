@@ -2,7 +2,7 @@ use chrono::{TimeZone, Utc};
 use std::{fs, io::Read};
 use uc_observability::startup_logs::{
     export_diagnostic_logs, export_startup_logs, export_startup_logs_with_status,
-    DiagnosticArchiveMode, DiagnosticArchiveRequest,
+    DiagnosticArchiveMode, DiagnosticArchiveRequest, HostManifest,
 };
 
 #[test]
@@ -114,6 +114,7 @@ fn online_export_embeds_engine_preparation_and_reports_actual_files() {
             since: Some(Utc.with_ymd_and_hms(2026, 9, 11, 0, 0, 0).unwrap()),
             engine_preparation: Some(preparation),
             startup_status: None,
+            host: None,
         },
     )
     .unwrap();
@@ -166,6 +167,7 @@ fn online_export_keeps_a_partial_package_when_a_managed_file_is_unreadable() {
             since: None,
             engine_preparation: Some(serde_json::json!({ "flush": "completed" })),
             startup_status: None,
+            host: None,
         },
     )
     .unwrap();
@@ -230,6 +232,7 @@ fn offline_export_fails_when_every_log_is_outside_the_window() {
             since: Some(Utc::now() + chrono::Duration::days(1)),
             engine_preparation: None,
             startup_status: None,
+            host: None,
         },
     );
 
@@ -301,6 +304,7 @@ fn offline_export_fails_when_unreadable_logs_are_outside_the_window() {
             since: since_2026_09_02(),
             engine_preparation: None,
             startup_status: None,
+            host: None,
         },
     );
 
@@ -329,6 +333,7 @@ fn online_export_does_not_report_unreadable_logs_outside_the_window() {
             since: since_2026_09_02(),
             engine_preparation: None,
             startup_status: None,
+            host: None,
         },
     )
     .unwrap();
@@ -365,5 +370,119 @@ fn offline_export_keeps_startup_status_when_every_log_in_the_window_is_unreadabl
     assert_eq!(
         manifest["collection"]["unreadableFiles"][0],
         "uniclipboard-daemon.json.2026-09-01"
+    );
+}
+
+#[test]
+fn export_failures_are_classified_by_where_they_happened() {
+    use uc_observability::startup_logs::ExportFailureCause;
+
+    // Nothing to export.
+    let root = tempfile::tempdir().unwrap();
+    let error = export_startup_logs(root.path(), &root.path().join("out.zip")).unwrap_err();
+    assert_eq!(error.cause(), ExportFailureCause::NoLogs);
+
+    // The log directory cannot be listed: a file stands where it should be.
+    let not_a_directory = root.path().join("logs");
+    fs::write(&not_a_directory, "file").unwrap();
+    let error = export_startup_logs(&not_a_directory, &root.path().join("out.zip")).unwrap_err();
+    assert_eq!(error.cause(), ExportFailureCause::SourceRead);
+
+    // The archive cannot be created next to a destination that has no parent.
+    let logs = root.path().join("real-logs");
+    fs::create_dir(&logs).unwrap();
+    fs::write(logs.join("uniclipboard-gui.json.2026-09-09"), "x\n").unwrap();
+    let error =
+        export_startup_logs(&logs, &root.path().join("missing").join("out.zip")).unwrap_err();
+    assert_eq!(error.cause(), ExportFailureCause::ArchiveWrite);
+}
+
+fn read_manifest(output: &std::path::Path) -> serde_json::Value {
+    let mut archive = zip::ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    let mut manifest = String::new();
+    archive
+        .by_name("manifest.json")
+        .unwrap()
+        .read_to_string(&mut manifest)
+        .unwrap();
+    serde_json::from_str(&manifest).unwrap()
+}
+
+#[test]
+fn the_manifest_names_the_sources_that_contributed_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let logs = root.path().join("logs");
+    fs::create_dir(&logs).unwrap();
+    fs::write(logs.join("uniclipboard-gui.json.2026-09-09"), "gui\n").unwrap();
+    fs::write(logs.join("engine.2026-09-09.jsonl"), "engine\n").unwrap();
+    let output = root.path().join("support.zip");
+
+    export_startup_logs(&logs, &output).unwrap();
+
+    let manifest = read_manifest(&output);
+    let missing: Vec<(String, String)> = manifest["collection"]["missingSources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["source"].as_str().unwrap().to_owned(),
+                entry["reason"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        missing,
+        [
+            ("daemon".to_owned(), "missing".to_owned()),
+            ("cli".to_owned(), "missing".to_owned()),
+            ("quick-panel".to_owned(), "missing".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn the_manifest_describes_the_exporting_host() {
+    let root = tempfile::tempdir().unwrap();
+    let logs = root.path().join("logs");
+    fs::create_dir(&logs).unwrap();
+    fs::write(logs.join("uniclipboard-daemon.json.2026-09-09"), "daemon\n").unwrap();
+    let output = root.path().join("support.zip");
+
+    export_diagnostic_logs(
+        &logs,
+        &output,
+        DiagnosticArchiveRequest {
+            mode: DiagnosticArchiveMode::Online,
+            since: None,
+            engine_preparation: None,
+            startup_status: None,
+            host: Some(HostManifest {
+                app_version: "1.2.0".to_owned(),
+                os: "macos".to_owned(),
+                arch: "aarch64".to_owned(),
+                profile: Some("dev".to_owned()),
+                portable: false,
+                installed_log_profile: "debug".to_owned(),
+                telemetry_enabled: true,
+                timezone_offset_minutes: 480,
+            }),
+        },
+    )
+    .unwrap();
+
+    let host = read_manifest(&output)["host"].clone();
+    assert_eq!(
+        host,
+        serde_json::json!({
+            "appVersion": "1.2.0",
+            "os": "macos",
+            "arch": "aarch64",
+            "profile": "dev",
+            "portable": false,
+            "installedLogProfile": "debug",
+            "telemetryEnabled": true,
+            "timezoneOffsetMinutes": 480
+        })
     );
 }

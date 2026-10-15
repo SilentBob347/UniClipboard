@@ -161,6 +161,7 @@ impl IntoResponse for ApiError {
             code: self.code,
             message: self.message,
             details: self.details,
+            request_id: None,
         };
         (self.status, Json(body)).into_response()
     }

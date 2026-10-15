@@ -10,7 +10,8 @@ use anyhow::Context;
 use axum::body::Body;
 use axum::http::header::{
     HeaderName, HeaderValue, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
-    ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_REQUEST_METHOD, ORIGIN,
+    ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_REQUEST_METHOD,
+    ORIGIN,
 };
 use axum::http::HeaderMap;
 use axum::http::Method;
@@ -465,13 +466,26 @@ pub trait DaemonDiagnosticsRuntime: Send + Sync {
     fn prepare_export(&self) -> Result<DiagnosticExportPreparationDto, DaemonDiagnosticError>;
 }
 
+/// Where a diagnostic archive export failed. Carries no error text, which may
+/// hold paths; the cause is what the client and the log record need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonDiagnosticArchiveError {
+    /// The log directory could not be listed.
+    SourceReadFailed,
+    /// The archive could not be built or saved.
+    ArchiveWriteFailed,
+    /// The export destination (Downloads) is unavailable.
+    DestinationUnavailable,
+    Unknown,
+}
+
 #[async_trait::async_trait]
 pub trait DaemonDiagnosticArchive: Send + Sync {
     async fn export(
         &self,
         since_hours: Option<u32>,
         engine_preparation: DiagnosticExportPreparationDto,
-    ) -> anyhow::Result<LogExportResultDto>;
+    ) -> Result<LogExportResultDto, DaemonDiagnosticArchiveError>;
 }
 
 fn peer_channel_to_wire(channel: PeerConnectionChannelSummary) -> &'static str {
@@ -527,7 +541,7 @@ pub(crate) async fn request_tracing_middleware(request: Request<Body>, next: Nex
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let query_redacted = redact_query_secrets(request.uri().query());
-    let request_id = format!("{:016x}", rand::random::<u64>());
+    let request_id = crate::api::request_id::accept_or_generate(request.headers());
     let start = Instant::now();
     let span = tracing::info_span!(
         "daemon.http.request",
@@ -544,9 +558,12 @@ pub(crate) async fn request_tracing_middleware(request: Request<Body>, next: Nex
             tracing::info!("daemon http request received");
         }
 
-        let mut response = next.run(request).await;
+        let response = next.run(request).await;
+        let mut response = crate::api::request_id::stamp_error_body(response, &request_id).await;
         if let Ok(value) = HeaderValue::from_str(&request_id) {
-            response.headers_mut().insert("x-request-id", value);
+            response
+                .headers_mut()
+                .insert(crate::api::request_id::REQUEST_ID_HEADER, value);
         }
         let status = response.status();
         let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -701,7 +718,12 @@ fn apply_cors_headers(headers: &mut HeaderMap, origin: Option<&str>) {
     );
     headers.insert(
         ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("authorization, content-type"),
+        HeaderValue::from_static("authorization, content-type, x-request-id"),
+    );
+    // Without this a browser cannot read the id from a cross-origin response.
+    headers.insert(
+        ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("x-request-id"),
     );
     headers.insert(
         HeaderName::from_static("vary"),
@@ -963,6 +985,175 @@ mod request_log_redaction_tests {
             handler_event.contains("path=/correlation-test"),
             "{handler_event}"
         );
+    }
+}
+
+#[cfg(test)]
+mod request_correlation_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::middleware;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use crate::api::dto::error::ApiError;
+
+    /// The same middleware order the daemon uses: request tracing outside CORS.
+    fn router() -> Router {
+        Router::new()
+            .route(
+                "/fails",
+                get(|| async { Err::<StatusCode, ApiError>(ApiError::bad_request("nope")) }),
+            )
+            .route(
+                "/tuple-error",
+                get(|| async {
+                    (
+                        StatusCode::NOT_FOUND,
+                        axum::Json(uc_daemon_contract::api::dto::error::ApiErrorResponse::new(
+                            "not_found",
+                            "gone",
+                        )),
+                    )
+                }),
+            )
+            .route(
+                "/foreign-error",
+                get(|| async {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        axum::Json(serde_json::json!({ "upstream": "down" })),
+                    )
+                }),
+            )
+            .route(
+                "/list-error",
+                get(|| async {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        axum::Json(serde_json::json!(["a", "b"])),
+                    )
+                }),
+            )
+            .route(
+                "/ok-json",
+                get(|| async { axum::Json(serde_json::json!({ "code": "x", "message": "y" })) }),
+            )
+            .route("/ok", get(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn(super::cors_middleware))
+            .layer(middleware::from_fn(super::request_tracing_middleware))
+    }
+
+    async fn call(uri: &str, request_id: Option<&str>) -> axum::response::Response {
+        let mut request = Request::builder()
+            .uri(uri)
+            .header("origin", "http://localhost:5173");
+        if let Some(id) = request_id {
+            request = request.header("x-request-id", id);
+        }
+        router()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_well_formed_inbound_request_id_is_kept() {
+        let response = call("/ok", Some("ui-7f3a.9c-12")).await;
+        assert_eq!(response.headers()["x-request-id"], "ui-7f3a.9c-12");
+    }
+
+    #[tokio::test]
+    async fn a_malformed_inbound_request_id_is_replaced() {
+        let too_long = "a".repeat(65);
+        for bad in [
+            "has space",
+            "semi;colon",
+            "",
+            too_long.as_str(),
+            "new\u{e9}line",
+        ] {
+            let response = call("/ok", Some(bad)).await;
+            let id = response.headers()["x-request-id"].to_str().unwrap();
+            assert_ne!(id, bad);
+            assert!(!id.is_empty() && id.len() <= 64, "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_browser_may_send_and_read_the_request_id() {
+        let preflight = router()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/ok")
+                    .header("origin", "http://localhost:5173")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let allowed = preflight.headers()["access-control-allow-headers"]
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(allowed.contains("x-request-id"), "{allowed}");
+
+        let response = call("/ok", None).await;
+        let exposed = response.headers()["access-control-expose-headers"]
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(exposed.contains("x-request-id"), "{exposed}");
+    }
+
+    async fn body_of(response: axum::response::Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn every_error_body_producer_gets_the_request_id() {
+        let response = call("/tuple-error", Some("trace-tuple")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_of(response).await["requestId"], "trace-tuple");
+    }
+
+    #[tokio::test]
+    async fn only_json_object_error_bodies_are_stamped() {
+        // A successful response keeps its body even if it looks like an error.
+        let ok = body_of(call("/ok-json", Some("trace-ok")).await).await;
+        assert!(ok.get("requestId").is_none(), "{ok}");
+
+        // Rejections that predate the canonical shape (the session middleware
+        // answers `{ "error": ... }`) are still correlated.
+        let foreign = body_of(call("/foreign-error", Some("trace-foreign")).await).await;
+        assert_eq!(
+            foreign,
+            serde_json::json!({ "upstream": "down", "requestId": "trace-foreign" })
+        );
+
+        // Anything that is not a JSON object is passed through untouched.
+        let list = call("/list-error", Some("trace-list")).await;
+        assert_eq!(body_of(list).await, serde_json::json!(["a", "b"]));
+    }
+
+    #[tokio::test]
+    async fn an_error_body_carries_the_request_id_of_its_response() {
+        let response = call("/fails", Some("trace-me-1")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()["x-request-id"], "trace-me-1");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["requestId"], "trace-me-1");
+        assert_eq!(body["code"], "bad_request");
+        assert!(body.get("request_id").is_none());
     }
 }
 

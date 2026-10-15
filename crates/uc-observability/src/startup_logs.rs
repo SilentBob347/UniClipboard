@@ -5,11 +5,13 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use zip::write::SimpleFileOptions;
+
+use crate::startup_failure::{MAX_STARTUP_FAILURE_BYTES, STARTUP_FAILURE_FILE};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +26,27 @@ pub struct DiagnosticArchiveRequest {
     pub since: Option<DateTime<Utc>>,
     pub engine_preparation: Option<Value>,
     pub startup_status: Option<Value>,
+    pub host: Option<HostManifest>,
+}
+
+/// Facts about the exporting host that explain how the logs were produced.
+///
+/// Carries no device, peer or account identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostManifest {
+    pub app_version: String,
+    pub os: String,
+    pub arch: String,
+    /// Named profile; `None` for the default one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    pub portable: bool,
+    /// Log profile the running process installed (not the persisted setting,
+    /// which only applies at the next start).
+    pub installed_log_profile: String,
+    pub telemetry_enabled: bool,
+    pub timezone_offset_minutes: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,10 +56,79 @@ pub struct DiagnosticArchiveReport {
     pub unreadable_files: Vec<String>,
     pub truncated_files: Vec<String>,
     pub concurrent_writes_possible: bool,
+    /// Log sources that contributed no file to the package.
+    pub missing_sources: Vec<MissingSource>,
 }
 
+/// A log source absent from an export and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingSource {
+    pub source: &'static str,
+    pub reason: MissingReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingReason {
+    /// The log directory holds no file of this source.
+    Missing,
+    /// Files exist but none could be exported.
+    Unreadable,
+}
+
+/// Where an export failed, so callers can tell the user what to look at
+/// without parsing error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFailureCause {
+    /// No managed log lies inside the requested window.
+    NoLogs,
+    /// The log directory could not be listed.
+    SourceRead,
+    /// The archive could not be built or saved.
+    ArchiveWrite,
+}
+
+/// Failure of [`export_diagnostic_logs`], tagged with its [`ExportFailureCause`].
+#[derive(Debug)]
+pub struct ExportError {
+    cause: ExportFailureCause,
+    source: anyhow::Error,
+}
+
+impl ExportError {
+    fn new(cause: ExportFailureCause, source: impl Into<anyhow::Error>) -> Self {
+        Self {
+            cause,
+            source: source.into(),
+        }
+    }
+
+    fn archive_write(source: impl Into<anyhow::Error>) -> Self {
+        Self::new(ExportFailureCause::ArchiveWrite, source)
+    }
+
+    pub fn cause(&self) -> ExportFailureCause {
+        self.cause
+    }
+}
+
+impl std::fmt::Display for ExportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:#}", self.source)
+    }
+}
+
+impl std::error::Error for ExportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+const NO_LOGS_MESSAGE: &str = "No application logs are available to export";
+
 /// Package retained logs while the daemon is unavailable.
-pub fn export_startup_logs(logs_dir: &Path, destination: &Path) -> Result<()> {
+pub fn export_startup_logs(logs_dir: &Path, destination: &Path) -> Result<(), ExportError> {
     export_startup_logs_with_status(logs_dir, destination, None)
 }
 
@@ -46,7 +138,7 @@ pub fn export_startup_logs_with_status(
     logs_dir: &Path,
     destination: &Path,
     startup_status: Option<Value>,
-) -> Result<()> {
+) -> Result<(), ExportError> {
     export_diagnostic_logs(
         logs_dir,
         destination,
@@ -55,6 +147,7 @@ pub fn export_startup_logs_with_status(
             since: None,
             engine_preparation: None,
             startup_status,
+            host: None,
         },
     )?;
     Ok(())
@@ -65,17 +158,23 @@ pub fn export_diagnostic_logs(
     logs_dir: &Path,
     destination: &Path,
     request: DiagnosticArchiveRequest,
-) -> Result<DiagnosticArchiveReport> {
-    let (mut candidates, unreadable_files) = collect_log_files(logs_dir)?;
+) -> Result<DiagnosticArchiveReport, ExportError> {
+    let (mut candidates, unreadable_files) = collect_log_files(logs_dir)
+        .map_err(|error| ExportError::new(ExportFailureCause::SourceRead, error))?;
     candidates.sort_by(|left, right| left.name.cmp(&right.name));
     if candidates.is_empty() && matches!(request.mode, DiagnosticArchiveMode::Offline) {
-        bail!("No application logs are available to export");
+        return Err(ExportError::new(
+            ExportFailureCause::NoLogs,
+            anyhow::anyhow!(NO_LOGS_MESSAGE),
+        ));
     }
 
     let parent = destination
         .parent()
-        .context("missing destination directory")?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        .context("missing destination directory")
+        .map_err(ExportError::archive_write)?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(ExportError::archive_write)?;
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o600);
@@ -84,6 +183,7 @@ pub fn export_diagnostic_logs(
         unreadable_files,
         truncated_files: Vec::new(),
         concurrent_writes_possible: true,
+        missing_sources: Vec::new(),
     };
 
     // Files that belong to the requested window, whether or not they could be
@@ -123,15 +223,23 @@ pub fn export_diagnostic_logs(
             // Copy the length observed at open time rather than reading to
             // EOF, so an export converges while writers keep appending; later
             // records are covered by `concurrent_writes_possible`.
-            let length = metadata.len();
-            archive.start_file(format!("logs/{}", candidate.name), options)?;
-            let copied = io::copy(&mut input.take(length), &mut archive)?;
+            let length = if candidate.date.is_none() {
+                metadata.len().min(MAX_STARTUP_FAILURE_BYTES)
+            } else {
+                metadata.len()
+            };
+            archive
+                .start_file(format!("logs/{}", candidate.name), options)
+                .map_err(ExportError::archive_write)?;
+            let copied = io::copy(&mut input.take(length), &mut archive)
+                .map_err(ExportError::archive_write)?;
             if copied != length {
                 report.truncated_files.push(candidate.name.clone());
             }
             report.included_files.push(candidate.name);
         }
 
+        report.missing_sources = missing_sources(&report);
         let manifest = DiagnosticArchiveManifest {
             schema_version: 1,
             mode: request.mode,
@@ -139,29 +247,44 @@ pub fn export_diagnostic_logs(
             since: request.since,
             engine_preparation: request.engine_preparation,
             startup_status: request.startup_status,
+            host: request.host,
             collection: &report,
         };
-        archive.start_file("manifest.json", options)?;
-        serde_json::to_writer_pretty(&mut archive, &manifest)?;
-        archive.finish()?;
+        archive
+            .start_file("manifest.json", options)
+            .map_err(ExportError::archive_write)?;
+        serde_json::to_writer_pretty(&mut archive, &manifest)
+            .map_err(ExportError::archive_write)?;
+        archive.finish().map_err(ExportError::archive_write)?;
     }
 
     // The window is checked against the opened handle, so an offline export
     // with no file inside it is only known here. Dropping the temporary
     // archive leaves any existing destination untouched.
     if in_window == 0 && matches!(request.mode, DiagnosticArchiveMode::Offline) {
-        bail!("No application logs are available to export");
+        return Err(ExportError::new(
+            ExportFailureCause::NoLogs,
+            anyhow::anyhow!(NO_LOGS_MESSAGE),
+        ));
     }
 
-    temporary.as_file().sync_all()?;
-    temporary.persist(destination).context("save log archive")?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(ExportError::archive_write)?;
+    temporary
+        .persist(destination)
+        .context("save log archive")
+        .map_err(ExportError::archive_write)?;
     Ok(report)
 }
 
 struct LogCandidate {
     path: PathBuf,
     name: String,
-    date: NaiveDate,
+    /// Calendar day of a dated log; `None` for the undated startup failure
+    /// record, which is always part of the window.
+    date: Option<NaiveDate>,
     /// Directory-entry metadata; only used when the file cannot be opened.
     listed: Option<fs::Metadata>,
 }
@@ -178,7 +301,11 @@ fn collect_log_files(logs_dir: &Path) -> Result<(Vec<LogCandidate>, Vec<String>)
         let Some(name) = name.to_str().map(str::to_owned) else {
             continue;
         };
-        let Some(date) = managed_log_date(&name) else {
+        let date = if name == STARTUP_FAILURE_FILE {
+            None
+        } else if let Some(date) = managed_log_date(&name) {
+            Some(date)
+        } else {
             continue;
         };
         let file_type = match entry.file_type() {
@@ -189,6 +316,11 @@ fn collect_log_files(logs_dir: &Path) -> Result<(Vec<LogCandidate>, Vec<String>)
             }
         };
         if !file_type.is_file() {
+            // The startup failure record is the one file whose absence from an
+            // export must never be silent: report it instead of skipping it.
+            if date.is_none() {
+                unreadable.push(name);
+            }
             continue;
         }
         files.push(LogCandidate {
@@ -201,21 +333,80 @@ fn collect_log_files(logs_dir: &Path) -> Result<(Vec<LogCandidate>, Vec<String>)
     Ok((files, unreadable))
 }
 
-fn managed_log_date(name: &str) -> Option<NaiveDate> {
-    if let Some(date) = engine_log_file_date(name) {
-        return Some(date);
-    }
-    [
-        "uniclipboard-gui.json.",
-        "uniclipboard-daemon.json.",
-        "uniclipboard-cli.json.",
-        "uniclipboard-quick-panel.json.",
-    ]
-    .iter()
-    .find_map(|prefix| {
-        name.strip_prefix(prefix)
-            .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+/// Managed daily logs: source name, the file name around the date
+/// (`<prefix><YYYY-MM-DD><suffix>`) and whether a current Desktop process
+/// writes the source: an absent file of such a source is reported as missing.
+/// The Go GUI host and CLI write `gui` and `cli` through `hostlog`. The Go
+/// offline export keeps the same list; `tests/log_source_patterns.rs` and its Go counterpart check both
+/// against one fixture.
+const LOG_SOURCES: [(&str, &str, &str, bool); 5] = [
+    ("gui", "uniclipboard-gui.json.", "", true),
+    ("daemon", "uniclipboard-daemon.json.", "", true),
+    ("cli", "uniclipboard-cli.json.", "", true),
+    ("quick-panel", "uniclipboard-quick-panel.json.", "", true),
+    ("engine", "engine.", ".jsonl", true),
+];
+
+/// Whether a current Desktop process writes `source`; `None` for an unknown name.
+pub fn source_written_by_current_host(source: &str) -> Option<bool> {
+    LOG_SOURCES
+        .iter()
+        .find(|(name, ..)| *name == source)
+        .map(|&(.., current)| current)
+}
+
+/// Source and calendar day of a managed daily log, `None` for any other name.
+fn managed_log(name: &str) -> Option<(&'static str, NaiveDate)> {
+    LOG_SOURCES.iter().find_map(|&(source, prefix, suffix, _)| {
+        let date = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
+        // Zero-padded, as every writer produces it. Engine names additionally
+        // go through the Engine-compatible parser below.
+        let parsed = if source == "engine" {
+            engine_log_file_date(name)?
+        } else if date.len() == 10 {
+            NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?
+        } else {
+            return None;
+        };
+        Some((source, parsed))
     })
+}
+
+/// Sources of [`LOG_SOURCES`] without an exported file, in table order.
+fn missing_sources(report: &DiagnosticArchiveReport) -> Vec<MissingSource> {
+    let contributes = |names: &[String], source: &str| {
+        names
+            .iter()
+            .any(|name| managed_log_source(name) == Some(source))
+    };
+    LOG_SOURCES
+        .iter()
+        .filter_map(|&(source, _, _, current)| {
+            if !current || contributes(&report.included_files, source) {
+                None
+            } else if contributes(&report.unreadable_files, source) {
+                Some(MissingSource {
+                    source,
+                    reason: MissingReason::Unreadable,
+                })
+            } else {
+                Some(MissingSource {
+                    source,
+                    reason: MissingReason::Missing,
+                })
+            }
+        })
+        .collect()
+}
+
+/// Source name (`gui`, `daemon`, `cli`, `quick-panel`, `engine`) of a managed
+/// daily log file name.
+pub fn managed_log_source(name: &str) -> Option<&'static str> {
+    managed_log(name).map(|(source, _)| source)
+}
+
+fn managed_log_date(name: &str) -> Option<NaiveDate> {
+    managed_log(name).map(|(_, date)| date)
 }
 
 /// Date of an Engine daily log (`engine.YYYY-MM-DD.jsonl`). Mirrors Engine
@@ -227,11 +418,12 @@ pub fn engine_log_file_date(name: &str) -> Option<NaiveDate> {
 }
 
 fn within_window(
-    date: NaiveDate,
+    date: Option<NaiveDate>,
     modified: Option<SystemTime>,
     since: Option<DateTime<Utc>>,
 ) -> bool {
     let Some(since) = since else { return true };
+    let Some(date) = date else { return true };
     if date >= since.date_naive() {
         return true;
     }
@@ -247,5 +439,6 @@ struct DiagnosticArchiveManifest<'a> {
     since: Option<DateTime<Utc>>,
     engine_preparation: Option<Value>,
     startup_status: Option<Value>,
+    host: Option<HostManifest>,
     collection: &'a DiagnosticArchiveReport,
 }

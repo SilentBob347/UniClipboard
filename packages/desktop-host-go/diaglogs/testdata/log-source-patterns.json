@@ -1,0 +1,74 @@
+{
+  "_comment": "Shared contract (Go diaglogs and Rust uc-observability tests): a managed log file name is <prefix><YYYY-MM-DD><suffix> with a zero-padded valid calendar date; each role lists names that must match (positive) and must not match any role (negative). undatedFiles lists exact file names exported as logs/<name> when they are regular files, read through a hard cap of 4096 bytes; they carry no date, so a time window never excludes them, and a non-regular entry with such a name is reported as unreadable. writtenByCurrentHost is true for roles a current Desktop process writes; the absence of such a role's file is reported as a missing source, while a role marked false (none today) would still be exported when present but never reported missing.",
+  "schemaVersion": 1,
+  "undatedFiles": ["daemon-startup-failure.json"],
+  "roles": {
+    "gui": {
+      "writtenByCurrentHost": true,
+      "prefix": "uniclipboard-gui.json.",
+      "suffix": "",
+      "positive": ["uniclipboard-gui.json.2026-10-14", "uniclipboard-gui.json.2024-02-29"],
+      "negative": [
+        "uniclipboard-gui.json",
+        "uniclipboard-gui.json.2026-10-14.gz",
+        "uniclipboard-gui.json.2026-13-45",
+        "uniclipboard-gui.log.2026-10-14",
+        "uniclipboard-gui.json.20261014"
+      ]
+    },
+    "daemon": {
+      "writtenByCurrentHost": true,
+      "prefix": "uniclipboard-daemon.json.",
+      "suffix": "",
+      "positive": ["uniclipboard-daemon.json.2026-10-14", "uniclipboard-daemon.json.2025-01-01"],
+      "negative": [
+        "uniclipboard-daemon.json",
+        "uniclipboard-daemon.json.2026-10-14.tmp",
+        "uniclipboard-daemon.json.2026-02-30",
+        "uniclipboard-daemons.json.2026-10-14",
+        "uniclipboard-daemon.json.2026-1-4"
+      ]
+    },
+    "cli": {
+      "writtenByCurrentHost": true,
+      "prefix": "uniclipboard-cli.json.",
+      "suffix": "",
+      "positive": ["uniclipboard-cli.json.2026-10-14", "uniclipboard-cli.json.2023-12-31"],
+      "negative": [
+        "uniclipboard-cli.json",
+        "uniclipboard-cli.json.2026-10-14.bak",
+        "uniclipboard-cli.json.yesterday",
+        "uniclipboard-cli.jsonl.2026-10-14"
+      ]
+    },
+    "quick-panel": {
+      "writtenByCurrentHost": true,
+      "prefix": "uniclipboard-quick-panel.json.",
+      "suffix": "",
+      "positive": [
+        "uniclipboard-quick-panel.json.2026-10-14",
+        "uniclipboard-quick-panel.json.2026-01-31"
+      ],
+      "negative": [
+        "uniclipboard-quick-panel.json",
+        "uniclipboard-quick-panel.json.2026-10-14.gz",
+        "uniclipboard-quickpanel.json.2026-10-14",
+        "uniclipboard-quick-panel.json.2026-00-10"
+      ]
+    },
+    "engine": {
+      "writtenByCurrentHost": true,
+      "prefix": "engine.",
+      "suffix": ".jsonl",
+      "positive": ["engine.2026-10-14.jsonl", "engine.2024-02-29.jsonl"],
+      "negative": [
+        "engine.jsonl",
+        "engine.2026-10-14.json",
+        "engine.2026-10-14.jsonl.gz",
+        "engine.2026-13-01.jsonl",
+        "engine-2026-10-14.jsonl",
+        "engine.latest.jsonl"
+      ]
+    }
+  }
+}

@@ -96,6 +96,11 @@
           },
           "message": {
             "type": "string"
+          },
+          "requestId": {
+            "description": "Id of the request that failed, equal to the `x-request-id` response\nheader, so a user-visible error can be matched to the daemon's log\nrecords. Omitted from the wire when the error was not produced while\nserving a request.",
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
@@ -1769,6 +1774,13 @@
             },
             "type": "array"
           },
+          "missingSources": {
+            "description": "Log sources (`gui`, `daemon`, `cli`, `quick-panel`, `engine`) that\ncontributed no file to the package.",
+            "items": {
+              "$ref": "#/components/schemas/MissingLogSourceDto"
+            },
+            "type": "array"
+          },
           "truncatedFiles": {
             "items": {
               "type": "string"
@@ -1786,7 +1798,8 @@
           "includedFiles",
           "unreadableFiles",
           "truncatedFiles",
-          "concurrentWritesPossible"
+          "concurrentWritesPossible",
+          "missingSources"
         ],
         "type": "object"
       },
@@ -4438,6 +4451,22 @@
         },
         "required": [
           "sourceTagIds"
+        ],
+        "type": "object"
+      },
+      "MissingLogSourceDto": {
+        "properties": {
+          "reason": {
+            "description": "`missing` (no file of this source) or `unreadable` (files exist, none\ncould be exported).",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "reason"
         ],
         "type": "object"
       },
@@ -10015,7 +10044,17 @@
                 }
               }
             },
-            "description": "Internal server error"
+            "description": "Export failed; `details.cause` is source_read_failed, archive_write_failed or unknown"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Export destination or local Engine diagnostics unavailable; `details.cause` may be destination_unavailable"
           }
         },
         "security": [
