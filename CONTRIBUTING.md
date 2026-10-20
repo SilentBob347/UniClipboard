@@ -295,6 +295,8 @@ When a fix is hard to cover with automated tests, add a regression note under `d
 
 CI runs an automated dependency audit (`.github/workflows/security-audit.yml`) on every PR/push that touches a lockfile, plus a daily scheduled run so newly-published advisories are caught even when no dependency changed:
 
+Audits do not automatically create or modify GitHub issues. PR, push, and manual runs retain the Rust audit check reports. Daily scheduled runs execute `cargo audit` directly, preserve its output in the job logs and summary, and fail the job when vulnerabilities are found or the audit encounters an execution error. The JS/TS audit scope, logs, and failure status remain unchanged. Failure notifications use the existing GitHub Actions mechanism; delivery and recipients depend on personal Actions notification settings and [GitHub notification rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs), so delivery to every repository watcher is not guaranteed. No external notification destination or notification setting is added or changed. Scheduled notifications normally go to the workflow creator or the last user to edit the cron schedule (re-enabling the workflow can also change the recipient). Informational notices remain in the reports but do not trigger failure notifications on their own.
+
 - **Rust** — [`rustsec/audit-check`](https://github.com/rustsec/audit-check) runs `cargo audit` against `Cargo.lock`. It fails the check on any real vulnerability advisory (informational notices like "unmaintained" do not fail the build). Run it locally with:
 
   ```bash
