@@ -74,6 +74,7 @@ Wails 版本与 Go 工具链只在 `apps/gui-go/go.mod` 中固定一处，生成
 | `get_install_kind` | `GetInstallKind` | - | `InstallKind` | none | 真实 | 真实 | 真实 | 契约命令；GetInstallKind tells how this copy was installed, so the page can route package-managed copies to their package manager instead of the in-app updater. |
 | `get_profile_recovery` | `GetProfileRecovery` | - | `json.RawMessage` | command: InternalError | 真实 | 真实 | 真实 | 契约命令；GetProfileRecovery returns the daemon's profile recovery state (`GET /encryption/recovery`) untouched. |
 | `get_quick_panel_double_tap_availability` | `GetQuickPanelDoubleTapAvailability` | - | `ModifierDoubleTapAvailability` | none | 真实 | 真实 | 真实 | 契约命令；GetQuickPanelDoubleTapAvailability tells whether the modifier double tap trigger can work in this session. |
+| `get_quick_panel_shortcut_status` | `GetQuickPanelShortcutStatus` | - | `QuickPanelShortcutStatus` | none | 真实 | 真实 | 真实 | 契约命令；GetQuickPanelShortcutStatus reports whether the saved quick panel shortcut is the one the OS holds: active, saved but not active (with the binding still held and the OS error), unknown, or inactive (ADR-013 section 10). |
 | `get_visual_effects` | `GetVisualEffects` | - | `EffectsSnapshot` | none | 真实 | 真实 | 真实 | 契约命令；GetVisualEffects returns this GUI session's authoritative state. |
 | `host_notification_permission` | `HostNotificationPermission` | - | `bool` | none | 真实 | 真实 | 真实 | 适配器：`@/host/notification`；HostNotificationPermission reports whether system notifications are allowed. |
 | `host_notification_request_permission` | `HostNotificationRequestPermission` | - | `NotificationPermission` | none | 真实 | 真实 | 真实 | 适配器：`@/host/notification`；HostNotificationRequestPermission asks the system for notification permission (adapter command). |
@@ -107,7 +108,6 @@ Wails 版本与 Go 工具链只在 `apps/gui-go/go.mod` 中固定一处，生成
 | `set_quick_panel_layout` | `SetQuickPanelLayout` | `scale *float64, previewExpanded bool, windowScale *float64` | `-` | none | 真实 | 真实 | 真实 | 契约命令；SetQuickPanelLayout sizes the quick panel for the page's content scale, the preview pane and (Linux) the window scale. |
 | `set_quick_panel_position` | `SetQuickPanelPosition` | `position QuickPanelPosition` | `-` | command: ValidationError, InternalError | 真实 | 真实 | 真实 | 契约命令；SetQuickPanelPosition saves where the quick panel appears. |
 | `set_traffic_light_position` | `SetTrafficLightPosition` | `offsetX *float64, offsetY *float64` | `-` | none | 不支持 | 有意空操作 | 有意空操作 | 契约命令；SetTrafficLightPosition would place the macOS window buttons. |
-| `set_tray_language` | `SetTrayLanguage` | `language string` | `-` | none | 真实 | 真实 | 真实 | 契约命令；SetTrayLanguage updates the tray menu labels to the UI language. |
 | `set_visual_effects_mode` | `SetVisualEffectsMode` | `mode EffectsMode` | `EffectsSnapshot` | command: ValidationError | 真实 | 真实 | 真实 | 契约命令；SetVisualEffectsMode applies immediately, then saves without rolling back on disk errors. |
 | `set_window_decorations` | `SetWindowDecorations` | `decorations bool` | `-` | none | 有意空操作 | 真实 | 真实 | 适配器：`@/host/window`；SetWindowDecorations applies the page's frame preference (custom controls drawn by the page, or the system frame) to the main window. |
 | `show_content_unlock` | `ShowContentUnlock` | - | `-` | none | 真实 | 真实 | 真实 | 契约命令；ShowContentUnlock brings the main window forward so the user can unlock content. |
@@ -129,14 +129,13 @@ Wails 版本与 Go 工具链只在 `apps/gui-go/go.mod` 中固定一处，生成
 | `update-available` | `updateAvailableEvent` | 宿主 → 页面 | `*UpdateMetadata` |
 | `update-download-progress` | `updateProgressEvent` | 宿主 → 页面 | `DownloadEvent` |
 | `update-install-progress` | `updateInstallEvent` | 宿主 → 页面 | `DownloadEvent` |
-| `settings://sync-changed` | `settingsSyncChangedEvent` | 宿主 → 页面 | `无载荷` |
 | `ui://navigate` | `uiNavigateEvent` | 宿主 → 页面 | `string` |
 | `quick-panel://prepare-show` | `quickPanelPrepareShow` | 宿主 → 页面 | `无载荷` |
 | `app://shutting-down` | `appShuttingDownEvent` | 宿主 → 页面 | `无载荷` |
 | `app://daemon-connection-changed` | `daemonConnectionChanged` | 宿主 → 页面 | `无载荷` |
 | `desktop-theme://changed` | `desktopThemeChangedEvent` | 宿主 → 页面 | `DesktopThemeSnapshot` |
-| `settings://changed` | `settingsChangedEvent` | 页面 → 宿主 | `SettingsChanged` |
 | `devices://sync-changed` | `devicesChangedEvent` | 双向 | `string` |
+| `quick-panel://shortcut-status` | `shortcutStatusEvent` | 宿主 → 页面 | `QuickPanelShortcutStatus` |
 
 <!-- END GENERATED: host-contract -->
 

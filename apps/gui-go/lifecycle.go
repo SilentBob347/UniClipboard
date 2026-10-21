@@ -31,6 +31,10 @@ func (h *HostService) quit(keepDaemon bool) {
 
 // shutdown stops background work, then the daemon unless the exit keeps it.
 func (h *HostService) shutdown() {
+	h.settingsWatch.Pause() // close its daemon connection before the daemon may be stopped below
+	if h.stopSettings != nil {
+		h.stopSettings()
+	}
 	if h.stopWake != nil {
 		h.stopWake() // unsubscribe before the scheduler stops so no wake targets a finished loop
 	}
@@ -56,6 +60,7 @@ const pageDisconnectGrace = 300 * time.Millisecond
 // announceDaemonStop tells the pages to close their daemon WebSocket before the daemon stops. A WebView that is
 // destroyed sends no close frame, so the daemon would otherwise wait for its heartbeat timeout before it exits.
 func (h *HostService) announceDaemonStop() {
+	h.settingsWatch.Pause() // the host's own connection would hold the daemon the same way; RestartDaemon resumes it
 	h.emit(appShuttingDownEvent, nil)
 	time.Sleep(pageDisconnectGrace)
 }
@@ -161,10 +166,46 @@ func restartDaemon() error {
 // fullRestart replaces the daemon first, then the GUI. A failed daemon restart
 // does not stop the GUI restart: the new GUI's bootstrap retries recovery.
 func (h *HostService) fullRestart() {
+	h.announceDaemonStop() // the windows close their sockets and the watcher pauses, so no connection holds the stop
 	if err := restartDaemon(); err != nil {
 		log.Printf("daemon restart failed, restarting the GUI anyway: %v", err)
 	}
 	if err := h.restartGUI(); err != nil {
+		h.resumeAfterStop(false)
 		h.app.Dialog.Error().SetTitle("UniClipboard").SetMessage(err.Error()).Show()
 	}
+}
+
+// resumeAfterStop ends a host-initiated daemon stop after which this process keeps running: a daemon restart, a
+// failed GUI relaunch, a failed update install. announceDaemonStop made the windows close their daemon sockets and
+// paused the watcher. Start a daemon when startAbsent is set and none runs; when a compatible daemon answers, store
+// its client and tell the windows to reconnect. The watcher resumes in every case and retries against whatever runs.
+func (h *HostService) resumeAfterStop(startAbsent bool) {
+	defer h.settingsWatch.Resume()
+	outcome, err := daemonlife.Probe()
+	if err != nil {
+		log.Printf("after the daemon stop the daemon state is unknown: %v", err)
+		return
+	}
+	if outcome.Kind == daemonlife.Absent && startAbsent {
+		if err := daemonproc.SpawnDetachedDaemon("gui"); err != nil {
+			log.Printf("failed to start the daemon after the stop: %v", err)
+			return
+		}
+		if err := daemonlife.WaitHealthy(daemonlife.StartupTimeout, ""); err != nil {
+			log.Printf("the daemon did not become healthy after the stop: %v", err)
+			return
+		}
+	} else if outcome.Kind != daemonlife.Compatible {
+		log.Printf("no compatible daemon after the stop (%v); the windows stay disconnected", outcome.Kind)
+		return
+	}
+	// A new process has its own connection file and token: re-read them, then tell the windows to reconnect.
+	client, err := daemonclient.FromEnv()
+	if err != nil {
+		log.Printf("failed to reconnect after the daemon stop: %v", err)
+		return
+	}
+	h.client.Store(client)
+	h.emit(daemonConnectionChanged, nil)
 }

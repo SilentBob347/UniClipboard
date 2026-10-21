@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
-	"github.com/UniClipboard/UniClipboard/apps/gui-go/internal/hostapi"
 	"runtime"
 
-	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/daemonclient"
+	"github.com/UniClipboard/UniClipboard/apps/gui-go/internal/hostapi"
 )
 
 // Native shell, appearance and lifecycle commands.
@@ -89,15 +88,6 @@ func installKind() InstallKind {
 	return platformInstallKind()
 }
 
-// SetTrayLanguage updates the tray menu labels to the UI language. It does not persist anything.
-//
-//uc:errors none
-//uc:os all=real
-func (h *HostService) SetTrayLanguage(language string) {
-	defer e2eInvoke("set_tray_language")() // e2e builds record when this command enters and leaves; a no-op otherwise
-	h.tray.setLanguage(language)
-}
-
 // SetWindowDecorations applies the page's frame preference (custom controls drawn by the page, or the system
 // frame) to the main window. macOS keeps its hidden-inset title bar either way.
 //
@@ -127,15 +117,11 @@ func (h *HostService) RestartApp() {
 //uc:os all=real
 func (h *HostService) RestartDaemon(ctx context.Context) error {
 	h.announceDaemonStop()
-	if err := restartDaemon(); err != nil {
-		return hostapi.Internal(err)
-	}
-	// The new process has its own connection file and token: re-read them, then tell the pages to reconnect.
-	client, err := daemonclient.FromEnv()
+	err := restartDaemon()
+	// Reconnect the host and the windows to the new daemon or, after a failure, to whatever daemon runs.
+	h.resumeAfterStop(false)
 	if err != nil {
 		return hostapi.Internal(err)
 	}
-	h.client.Store(client)
-	h.emit(daemonConnectionChanged, nil)
 	return nil
 }

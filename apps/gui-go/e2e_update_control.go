@@ -14,6 +14,7 @@ import (
 
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/daemonclient"
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/daemonproc"
+	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/settings"
 )
 
 // watchControlFile is the command channel of the wake/analytics scenarios: the orchestrator appends one command
@@ -118,6 +119,12 @@ func (s *EvidenceService) runControlCommand(line string) {
 		label, ms, _ := strings.Cut(arg, " ")
 		quiet, _ := strconv.Atoi(ms)
 		_ = s.write(Step{Window: "tray", Step: "tray-language-quiet-" + label, OK: waitTrayLanguageQuiet(quiet), Detail: map[string]any{"quietMs": quiet}})
+	case "tray-language":
+		// tray-language <label> <language>: pins the tray language in the host, as the removed SetTrayLanguage command did. The
+		// host applies the stored language again only when it changes, so a pin holds until the next language write.
+		label, language, _ := strings.Cut(arg, " ")
+		h.tray.setLanguage(language)
+		_ = s.write(Step{Window: "tray", Step: "tray-language-" + label, OK: true, Detail: language})
 	case "tray-language-race":
 		// tray-language-race <label> <n>: n concurrent tray language changes released together, alternating zh-CN and en. The
 		// menu (root labels and the device submenu title) must end in one language, the one the tray recorded last.
@@ -259,11 +266,7 @@ func (s *EvidenceService) runControlCommand(line string) {
 		h.shortcutsMu.Lock()
 		recorded := append([]string{}, h.osShortcuts...)
 		h.shortcutsMu.Unlock()
-		var stored struct {
-			KeyboardShortcuts map[string]json.RawMessage `json:"keyboardShortcuts"`
-			QuickPanel        quickPanelSettings         `json:"quickPanel"`
-		}
-		err := h.daemon().Get(ctx, "/settings", &stored)
+		stored, err := settings.Read(ctx, h.daemon())
 		visible := false
 		if w, ok := h.app.Window.GetByName(quickPanelWindowName); ok {
 			visible = w.IsVisible()

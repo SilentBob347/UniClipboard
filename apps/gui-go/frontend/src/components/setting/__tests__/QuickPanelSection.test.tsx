@@ -37,7 +37,10 @@ vi.mock('@/hooks/useSetting', () => ({
 }))
 
 vi.mock('@/lib/ipc', () => ({
-  commands: { restartApp: vi.fn() },
+  commands: {
+    restartApp: vi.fn(),
+    getQuickPanelShortcutStatus: vi.fn(() => new Promise(() => {})),
+  },
 }))
 
 vi.mock('@/components/setting/ShortcutRow', () => ({
@@ -116,7 +119,6 @@ function setup(Section: ComponentType = QuickPanelSection) {
     loading: false,
     error: null,
     reloadSetting: vi.fn(),
-    updateSetting: vi.fn(),
     updateGeneralSetting: vi.fn(),
     updateAutostart: vi.fn(),
     updateSyncSetting: vi.fn(),

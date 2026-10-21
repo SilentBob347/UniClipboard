@@ -11,8 +11,10 @@ import type { Settings } from '@/api/daemon/settings'
 import { SettingProvider } from '@/contexts/SettingContext'
 import { useSetting } from '@/hooks/useSetting'
 import { connectDaemonWs } from '@/lib/daemon-ws-bootstrap'
-import { emitSettingsChanged } from '@/lib/settings-events'
+import { resetSettingsSyncForTest } from '@/lib/settings-sync'
 import { makeBaseSettings } from '@/test/fixtures/settings'
+
+vi.mock('@/lib/daemon-ws', () => import('@/test/fixtures/settings-ws'))
 
 vi.mock('@/api/daemon', () => ({
   CustomRelayMutationError: class CustomRelayMutationError extends Error {
@@ -30,10 +32,6 @@ vi.mock('@/lib/daemon-ws-bootstrap', () => ({
   connectDaemonWs: vi.fn(),
 }))
 
-vi.mock('@/lib/settings-events', () => ({
-  emitSettingsChanged: vi.fn(),
-}))
-
 vi.mock('@/i18n', () => ({
   __esModule: true,
   default: {
@@ -49,7 +47,6 @@ const mockGetCustomRelays = vi.mocked(getCustomRelays)
 const mockMutateCustomRelay = vi.mocked(mutateCustomRelay)
 const mockUpdateSettings = vi.mocked(updateSettings)
 const mockConnectDaemonWs = vi.mocked(connectDaemonWs)
-const mockEmitSettingsChanged = vi.mocked(emitSettingsChanged)
 
 const baseSetting: Settings = makeBaseSettings({
   general: { theme: 'light', themeColor: 'zinc' },
@@ -63,6 +60,7 @@ const renderSettingHook = () => renderHook(() => useSetting(), { wrapper })
 
 describe('SettingContext network — updateNetworkSetting + saveSetting restartRequired', () => {
   beforeEach(() => {
+    resetSettingsSyncForTest()
     vi.clearAllMocks()
     mockConnectDaemonWs.mockResolvedValue(undefined)
     mockGetSettings.mockResolvedValue(baseSetting)
@@ -75,7 +73,6 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
       relays: [],
       restartRequired: true,
     })
-    mockEmitSettingsChanged.mockResolvedValue(undefined)
 
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -106,33 +103,6 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
     })
 
     expect(outcome).toEqual({ restartRequired: true })
-  })
-
-  it('Test 2: updateNetworkSetting 把 partial 镜像合并进 setting.network', async () => {
-    const { result } = renderSettingHook()
-    await waitFor(() => {
-      expect(result.current.setting).toEqual(baseSetting)
-    })
-
-    mockUpdateSettings.mockResolvedValueOnce({
-      success: true,
-      restartRequired: true,
-    })
-
-    await act(async () => {
-      await result.current.updateNetworkSetting({ allowRelayFallback: false })
-    })
-
-    expect(mockUpdateSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        network: expect.objectContaining({ allowRelayFallback: false }),
-      })
-    )
-    // 关键 fence：updateNetworkSetting 不应越界改其它段，验证 general/sync 段保持原状
-    const lastCall = mockUpdateSettings.mock.calls[mockUpdateSettings.mock.calls.length - 1]
-    const passed = lastCall[0] as Settings
-    expect(passed.general).toEqual(baseSetting.general)
-    expect(passed.sync).toEqual(baseSetting.sync)
   })
 
   it('Test 3: initial load queues a network mutation until settings are available', async () => {
@@ -218,10 +188,34 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
     })
 
     expect(result.current.setting).toEqual(baseSetting)
-    expect(mockEmitSettingsChanged).not.toHaveBeenCalled()
   })
 
-  it('serializes cross-section mutations and builds each payload from the latest commit', async () => {
+  it('Test 2: updateNetworkSetting 只发送 partial 中的 network 字段', async () => {
+    const { result } = renderSettingHook()
+    await waitFor(() => {
+      expect(result.current.setting).toEqual(baseSetting)
+    })
+
+    mockUpdateSettings.mockResolvedValueOnce({
+      success: true,
+      restartRequired: true,
+    })
+
+    await act(async () => {
+      await result.current.updateNetworkSetting({ allowRelayFallback: false })
+    })
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        network: expect.objectContaining({ allowRelayFallback: false }),
+      })
+    )
+    // 关键 fence：updateNetworkSetting 只发送改动的字段，不带 general/sync 段
+    const lastCall = mockUpdateSettings.mock.calls[mockUpdateSettings.mock.calls.length - 1]
+    expect(lastCall[0]).toEqual({ network: { allowRelayFallback: false } })
+  })
+
+  it('serializes cross-section mutations and sends only the leaves of each', async () => {
     const { result } = renderSettingHook()
     await waitFor(() => {
       expect(result.current.setting).toEqual(baseSetting)
@@ -257,9 +251,8 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
     })
 
     expect(mockUpdateSettings).toHaveBeenCalledTimes(2)
-    const secondPayload = mockUpdateSettings.mock.calls[1][0] as Settings
-    expect(secondPayload.network?.allowRelayFallback).toBe(false)
-    expect(secondPayload.general?.theme).toBe('dark')
+    // Each save carries only its own leaves.
+    expect(mockUpdateSettings.mock.calls[1][0]).toEqual({ general: { theme: 'dark' } })
   })
 
   it('queues reloads behind an in-flight mutation', async () => {
@@ -279,7 +272,7 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
       ...baseSetting,
       network: { ...baseSetting.network, allowRelayFallback: false },
     }
-    mockGetSettings.mockResolvedValueOnce(updatedSetting)
+    mockGetSettings.mockResolvedValue(updatedSetting)
 
     let save!: Promise<{ restartRequired: boolean }>
     let reload!: Promise<void>
@@ -296,7 +289,8 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
       await reload
     })
 
-    expect(mockGetSettings).toHaveBeenCalledTimes(2)
+    // The initial read, the read after the save, then the queued reload.
+    expect(mockGetSettings).toHaveBeenCalledTimes(3)
     expect(result.current.setting?.network?.allowRelayFallback).toBe(false)
   })
 
@@ -318,18 +312,6 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
     expect(result.current.customRelays).toEqual([
       { url: 'https://relay.example.com/', credentialConfigured: true },
     ])
-    expect(result.current.setting?.network.customRelayUrls).toEqual(['https://relay.example.com/'])
-  })
-
-  it('keeps the settings page available when only the relay list fails to load', async () => {
-    mockGetCustomRelays.mockRejectedValueOnce(new Error('relay request failed'))
-
-    const { result } = renderSettingHook()
-    await waitFor(() => expect(result.current.relayLoading).toBe(false))
-
-    expect(result.current.setting).toEqual(baseSetting)
-    expect(result.current.error).toBeNull()
-    expect(result.current.relayError).toContain('relay request failed')
   })
 
   it('queues an item mutation and commits the complete returned list', async () => {
@@ -375,11 +357,20 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
       url: 'https://relay.example.com',
       credential: { action: 'keep' },
     })
-    expect(result.current.setting?.network).toEqual({
-      ...baseSetting.network,
-      allowRelayFallback: false,
-      customRelayUrls: ['https://relay.example.com/'],
-    })
+    expect(result.current.customRelays).toEqual([
+      { url: 'https://relay.example.com/', credentialConfigured: false },
+    ])
+  })
+
+  it('keeps the settings page available when only the relay list fails to load', async () => {
+    mockGetCustomRelays.mockRejectedValueOnce(new Error('relay request failed'))
+
+    const { result } = renderSettingHook()
+    await waitFor(() => expect(result.current.relayLoading).toBe(false))
+
+    expect(result.current.setting).toEqual(baseSetting)
+    expect(result.current.error).toBeNull()
+    expect(result.current.relayError).toContain('relay request failed')
   })
 
   it('preserves the stored credential association when editing an address without a token', async () => {
@@ -459,6 +450,7 @@ describe('SettingContext network — updateNetworkSetting + saveSetting restartR
 
 describe('SettingContext network — 反向命名 + 契约 fence (Pitfall 1 + Pitfall 10)', () => {
   beforeEach(() => {
+    resetSettingsSyncForTest()
     vi.clearAllMocks()
     mockConnectDaemonWs.mockResolvedValue(undefined)
     mockGetSettings.mockResolvedValue(baseSetting)
@@ -467,7 +459,6 @@ describe('SettingContext network — 反向命名 + 契约 fence (Pitfall 1 + Pi
       success: true,
       restartRequired: false,
     })
-    mockEmitSettingsChanged.mockResolvedValue(undefined)
 
     Object.defineProperty(window, 'matchMedia', {
       writable: true,

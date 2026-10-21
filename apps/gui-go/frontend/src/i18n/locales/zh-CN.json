@@ -294,6 +294,15 @@
       "errorMessage": "自动重启失败，请手动退出并重新打开应用以使更改生效。",
       "retryButton": "重试"
     },
+    "partialSave": {
+      "message": "更改只保存了一部分。已保存：{{applied}}。未保存：{{failed}}。未尝试：{{skipped}}。设置页现在显示已保存的值。",
+      "owners": {
+        "engine": "同步与设备设置",
+        "desktop": "应用偏好",
+        "telemetry": "错误报告许可",
+        "none": "无"
+      }
+    },
     "categories": {
       "general": "通用设置",
       "appearance": "外观设置",
@@ -309,6 +318,15 @@
       "general": {
         "title": "通用设置",
         "startupTitle": "启动设置",
+        "trayTitle": "托盘",
+        "trayIcon": {
+          "label": "托盘图标",
+          "description": "菜单栏或系统托盘中显示的图标。",
+          "options": {
+            "glyph": "默认",
+            "cat": "经典猫头"
+          }
+        },
         "saveError": "保存设置失败",
         "deviceName": {
           "label": "设备名称",
@@ -906,7 +924,12 @@
         "confirmOverride": "仍然应用（清除冲突）",
         "confirm": "确认",
         "cancel": "取消",
-        "modified": "已修改"
+        "modified": "已修改",
+        "unsupportedKey": "此按键不能用于快捷键：{{key}}",
+        "saveFailed": "未保存：{{message}}",
+        "notActive": "已保存，但未生效。仍可用 {{active}} 打开快捷面板。（{{error}}）",
+        "notActiveNone": "已保存，但未生效。当前没有快捷键可打开快捷面板。（{{error}}）",
+        "applyUnknown": "已保存，但无法确认快捷键是否生效。（{{error}}）"
       },
       "quickPanel": {
         "compositorShortcuts": "Wayland 下的唤起快捷键由桌面环境管理。请在窗口管理器设置中为以下命令绑定快捷键。",

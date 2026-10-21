@@ -294,6 +294,15 @@
       "errorMessage": "自動再起動に失敗しました。アプリを手動で終了し、再度開いて変更を適用してください。",
       "retryButton": "再試行"
     },
+    "partialSave": {
+      "message": "変更の一部だけが保存されました。保存済み：{{applied}}。未保存：{{failed}}。未実行：{{skipped}}。設定には保存された値が表示されています。",
+      "owners": {
+        "engine": "同期とデバイスの設定",
+        "desktop": "アプリの設定",
+        "telemetry": "エラーレポートの同意",
+        "none": "なし"
+      }
+    },
     "categories": {
       "general": "全般",
       "appearance": "外観",
@@ -309,6 +318,15 @@
       "general": {
         "title": "全般",
         "startupTitle": "起動",
+        "trayTitle": "トレイ",
+        "trayIcon": {
+          "label": "トレイアイコン",
+          "description": "メニューバーまたはシステムトレイに表示するアイコンです。",
+          "options": {
+            "glyph": "デフォルト",
+            "cat": "クラシックな猫"
+          }
+        },
         "saveError": "設定の保存に失敗しました",
         "deviceName": {
           "label": "デバイス名",
@@ -906,7 +924,12 @@
         "confirmOverride": "とにかく適用 (競合をクリア)",
         "confirm": "確認",
         "cancel": "キャンセル",
-        "modified": "変更済み"
+        "modified": "変更済み",
+        "unsupportedKey": "このキーはショートカットに使用できません：{{key}}",
+        "saveFailed": "保存されませんでした：{{message}}",
+        "notActive": "保存されましたが、有効になっていません。クイックパネルは引き続き {{active}} で開きます。（{{error}}）",
+        "notActiveNone": "保存されましたが、有効になっていません。現在クイックパネルを開くショートカットはありません。（{{error}}）",
+        "applyUnknown": "保存されましたが、ショートカットが有効かどうか確認できません。（{{error}}）"
       },
       "quickPanel": {
         "compositorShortcuts": "Wayland の呼び出しショートカットはデスクトップ環境が管理します。コンポジターの設定で次のコマンドにキーを割り当ててください。",

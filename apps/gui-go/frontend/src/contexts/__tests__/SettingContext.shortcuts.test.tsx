@@ -9,7 +9,7 @@ import {
 import { SettingProvider } from '@/contexts/SettingContext'
 import { useSetting } from '@/hooks/useSetting'
 import { connectDaemonWs } from '@/lib/daemon-ws-bootstrap'
-import { emitSettingsChanged } from '@/lib/settings-events'
+import { resetSettingsSyncForTest } from '@/lib/settings-sync'
 import { makeBaseSettings } from '@/test/fixtures/settings'
 
 vi.mock('@/api/daemon', () => ({
@@ -29,9 +29,7 @@ vi.mock('@/lib/daemon-ws-bootstrap', () => ({
   connectDaemonWs: vi.fn(),
 }))
 
-vi.mock('@/lib/settings-events', () => ({
-  emitSettingsChanged: vi.fn(),
-}))
+vi.mock('@/lib/daemon-ws', () => import('@/test/fixtures/settings-ws'))
 
 vi.mock('@/i18n', () => ({
   __esModule: true,
@@ -48,12 +46,14 @@ const mockUpdateSettings = vi.mocked(updateSettings)
 const mockPersistQuickPanelDoubleTapModifier = vi.mocked(persistQuickPanelDoubleTapModifier)
 const mockPersistKeyboardShortcuts = vi.mocked(persistKeyboardShortcuts)
 const mockConnectDaemonWs = vi.mocked(connectDaemonWs)
-const mockEmitSettingsChanged = vi.mocked(emitSettingsChanged)
 
 const baseSetting: Settings = makeBaseSettings({
   general: { theme: 'light', themeColor: 'zinc' },
   keyboardShortcuts: { 'global.toggleQuickPanel': 'meta+ctrl+v' },
 })
+
+// The daemon stores what the host commands persist; the window reads it back after each write.
+let stored: Settings
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <SettingProvider>{children}</SettingProvider>
@@ -62,14 +62,18 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
 describe('SettingContext shortcuts — in-process apply path', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetSettingsSyncForTest()
+    stored = baseSetting
     mockConnectDaemonWs.mockResolvedValue(undefined)
-    mockGetSettings.mockResolvedValue(baseSetting)
+    mockGetSettings.mockImplementation(async () => stored)
     mockUpdateSettings.mockResolvedValue({ success: true, restartRequired: false })
-    mockPersistQuickPanelDoubleTapModifier.mockResolvedValue(undefined)
-    mockPersistKeyboardShortcuts.mockResolvedValue({
-      'global.toggleQuickPanel': 'meta+shift+v',
+    mockPersistQuickPanelDoubleTapModifier.mockImplementation(async modifier => {
+      stored = { ...stored, quickPanel: { ...stored.quickPanel, doubleTapModifier: modifier } }
     })
-    mockEmitSettingsChanged.mockResolvedValue(undefined)
+    mockPersistKeyboardShortcuts.mockImplementation(async (_previous, next) => {
+      stored = { ...stored, keyboardShortcuts: next }
+      return next
+    })
 
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -120,12 +124,6 @@ describe('SettingContext shortcuts — in-process apply path', () => {
     expect(result.current.setting?.keyboardShortcuts).toEqual({
       'global.toggleQuickPanel': 'meta+shift+v',
     })
-    expect(mockEmitSettingsChanged).toHaveBeenCalledWith({
-      ...baseSetting,
-      keyboardShortcuts: {
-        'global.toggleQuickPanel': 'meta+shift+v',
-      },
-    })
   })
 
   it('merges queued edits that were both created from the same previous snapshot', async () => {
@@ -135,14 +133,15 @@ describe('SettingContext shortcuts — in-process apply path', () => {
     })
 
     let resolveFirst: ((value: Record<string, string | string[]>) => void) | undefined
-    mockPersistKeyboardShortcuts
-      .mockImplementationOnce(
-        () =>
-          new Promise(resolve => {
-            resolveFirst = resolve
-          })
-      )
-      .mockImplementationOnce(async (_previous, next) => next)
+    mockPersistKeyboardShortcuts.mockImplementationOnce(
+      (_previous, next) =>
+        new Promise(resolve => {
+          resolveFirst = value => {
+            stored = { ...stored, keyboardShortcuts: next }
+            resolve(value)
+          }
+        })
+    )
 
     const previous = baseSetting.keyboardShortcuts ?? {}
     let firstSave!: Promise<void>

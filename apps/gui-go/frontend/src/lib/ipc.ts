@@ -134,7 +134,7 @@ function buildCommands(): TypedCommands {
  * @example
  * ```ts
  * const meta = await commands.getDeviceMeta()
- * await commands.setTrayLanguage('en')
+ * await commands.setQuickPanelEnabled(true)
  * try {
  *   await commands.unlockContent({ passphrase })
  * } catch (error) {
@@ -169,6 +169,7 @@ export type {
   EffectsSnapshot,
   ExportStartupLogsResult,
   ImportConfigStageResult,
+  QuickPanelShortcutStatus,
   SamplePermit,
   UpdateKeyboardShortcutsResult,
   UpdateMetadata,
@@ -182,5 +183,6 @@ export {
   QuickPanelDoubleTapModifier,
   QuickPanelExpandSide,
   QuickPanelPosition,
+  QuickPanelShortcutState,
   SystemMotion,
 } from '@host/models'

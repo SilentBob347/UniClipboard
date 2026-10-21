@@ -5,9 +5,12 @@ import type { Settings } from '@/api/daemon/settings'
 import { DEFAULT_THEME_COLOR } from '@/constants/theme'
 import { SettingProvider } from '@/contexts/SettingContext'
 import { useSetting } from '@/hooks/useSetting'
-import { listen } from '@/host/event'
 import { connectDaemonWs } from '@/lib/daemon-ws-bootstrap'
+import { resetSettingsSyncForTest } from '@/lib/settings-sync'
 import { makeBaseSettings } from '@/test/fixtures/settings'
+import { emitDaemonWsEvent } from '@/test/fixtures/settings-ws'
+
+vi.mock('@/lib/daemon-ws', () => import('@/test/fixtures/settings-ws'))
 
 vi.mock('@/api/daemon', () => ({
   getSettings: vi.fn(),
@@ -22,9 +25,6 @@ vi.mock('@/lib/daemon-ws-bootstrap', () => ({
   connectDaemonWs: vi.fn(),
 }))
 
-vi.mock('@/lib/settings-events', () => ({
-  emitSettingsChanged: vi.fn().mockResolvedValue(undefined),
-}))
 vi.mock('@/lib/ipc', () => ({
   commands: { setTrayLanguage: vi.fn().mockResolvedValue(undefined) },
 }))
@@ -54,6 +54,7 @@ describe('SettingProvider theme integration', () => {
   )
 
   beforeEach(() => {
+    resetSettingsSyncForTest()
     vi.clearAllMocks()
     prefersDark = false
     mockConnectDaemonWs.mockResolvedValue(undefined)
@@ -88,19 +89,12 @@ describe('SettingProvider theme integration', () => {
   it('reloads the saved sync switch after a tray change', async () => {
     const { result } = renderHook(() => useSetting(), { wrapper })
     await waitFor(() => expect(result.current.setting).not.toBeNull())
-    const subscription = vi
-      .mocked(listen)
-      .mock.calls.find(([name]) => name === 'settings://sync-changed')
-    expect(subscription).toBeDefined()
     mockGetSettings.mockResolvedValue(
       makeBaseSettings({ sync: { ...baseSetting.sync, syncEnabled: false } })
     )
+    // The tray's write reaches the window as the daemon's Engine settings.changed.
     await act(async () => {
-      subscription![1]({
-        event: 'settings://sync-changed',
-        id: 1,
-        payload: null,
-      })
+      emitDaemonWsEvent('settings.changed', { owner: 'engine', sections: ['sync'], revision: 1 })
     })
     await waitFor(() => expect(result.current.setting?.sync.syncEnabled).toBe(false))
   })

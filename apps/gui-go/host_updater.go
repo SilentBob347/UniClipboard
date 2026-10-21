@@ -16,6 +16,7 @@ import (
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/apppaths"
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/buildinfo"
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/daemonclient"
+	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/settings"
 )
 
 // updaterPublicKey is the base64 minisign public key of the release signer. It
@@ -78,13 +79,8 @@ func (h *HostService) resolveChannel(ctx context.Context, explicit *string) upda
 	if explicit != nil {
 		return update.ParseChannel(*explicit)
 	}
-	var settings struct {
-		General struct {
-			UpdateChannel *string `json:"updateChannel"`
-		} `json:"general"`
-	}
-	if err := h.daemon().Get(ctx, "/settings", &settings); err == nil && settings.General.UpdateChannel != nil {
-		return update.ParseChannel(*settings.General.UpdateChannel)
+	if view, err := settings.Read(ctx, h.daemon()); err == nil && view.General.UpdateChannel != nil {
+		return update.ParseChannel(*view.General.UpdateChannel)
 	}
 	return update.DetectChannel(buildinfo.PackageVersion)
 }
@@ -292,12 +288,20 @@ func (h *HostService) installUpdate(ctx context.Context, send func(DownloadEvent
 		version = u.release.Version
 	}
 	u.mu.Unlock()
+	// installPayload stops the daemon. Announce the stop first, as the exit and restart paths do: the windows close their
+	// daemon sockets and the settings watcher pauses, so no connection holds the stop. A successful install relaunches the
+	// GUI; when the install fails this process stays and reconnects.
+	h.announceDaemonStop()
 	if err := h.installPayload(data, version); err != nil {
+		h.resumeAfterStop(true) // the install may have stopped the daemon without starting one
 		send(failedEvent(err))
 		return hostapi.TextError(err.Error())
 	}
 	send(DownloadEvent{Event: DownloadEventFinished})
 	if err := h.relaunchAfterInstall(); err != nil {
+		// The new version is installed and the daemon is stopped: a daemon started now would be the new one, which this
+		// GUI refuses, so none is started; the windows stay disconnected until the user restarts the app.
+		h.resumeAfterStop(false)
 		return hostapi.TextError(err.Error())
 	}
 	return nil
@@ -349,15 +353,11 @@ func (h *HostService) setAutoDownload(ctx context.Context, enabled bool) error {
 }
 
 func (h *HostService) autoDownload(ctx context.Context) (bool, error) {
-	var settings struct {
-		General struct {
-			AutoDownloadUpdate bool `json:"autoDownloadUpdate"`
-		} `json:"general"`
-	}
-	if err := h.daemon().Get(ctx, "/settings", &settings); err != nil {
+	view, err := settings.Read(ctx, h.daemon())
+	if err != nil {
 		return false, hostapi.TextError("failed to load settings: " + err.Error())
 	}
-	return settings.General.AutoDownloadUpdate, nil
+	return view.General.AutoDownloadUpdate, nil
 }
 
 // checkUpdateFromTray is the tray's manual check: open the updater window when a release exists, otherwise

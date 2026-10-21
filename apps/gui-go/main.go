@@ -15,8 +15,10 @@ import (
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/daemonclient"
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/daemonlife"
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/daemonproc"
+	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/globalshortcut"
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/hostlog"
 	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/quickpanelhelper"
+	"github.com/UniClipboard/UniClipboard/packages/desktop-host-go/settings"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
@@ -26,33 +28,38 @@ import (
 var assets embed.FS
 
 type HostService struct {
-	app              *application.App
-	client           atomic.Pointer[daemonclient.Client] // replaced when the daemon is restarted; read through daemon()
-	effects          *visualEffects
-	panel            panelState
-	exit             exitIntent
-	prompts          promptStore
-	stopScheduler    context.CancelFunc
-	stopTray         context.CancelFunc
-	notifier         *notifications.NotificationService
-	helper           *quickpanelhelper.Supervisor // nil when the WebView quick panel is in use
-	updates          updater
-	lastCheck        lastCheckAt
-	wake             chan string // pending wake source (system resume, background activity) for the update scheduler, capacity 1
-	analytics        analyticsQueue
-	stopWake         func()
-	stopActivity     func() // invalidates the macOS background activity
-	tray             *trayMenu
-	singleInstanceID string
-	readyMu          sync.Mutex
-	ready            bool // the daemon bootstrap finished
-	showWhenReady    bool // a second launch asked for the main window before that
-	files            knownFiles
+	app                 *application.App
+	client              atomic.Pointer[daemonclient.Client] // replaced when the daemon is restarted; read through daemon()
+	effects             *visualEffects
+	panel               panelState
+	exit                exitIntent
+	prompts             promptStore
+	stopScheduler       context.CancelFunc
+	stopTray            context.CancelFunc
+	settingsWatch       *settings.Watcher // keeps applySettings current from the daemon, with or without a window
+	trayLanguageApplied string            // the tray language applySettings last applied; read and written on the watcher goroutine only
+	stopSettings        context.CancelFunc
+	notifier            *notifications.NotificationService
+	helper              *quickpanelhelper.Supervisor // nil when the WebView quick panel is in use
+	updates             updater
+	lastCheck           lastCheckAt
+	wake                chan string // pending wake source (system resume, background activity) for the update scheduler, capacity 1
+	analytics           analyticsQueue
+	stopWake            func()
+	stopActivity        func() // invalidates the macOS background activity
+	tray                *trayMenu
+	singleInstanceID    string
+	readyMu             sync.Mutex
+	ready               bool // the daemon bootstrap finished
+	showWhenReady       bool // a second launch asked for the main window before that
+	files               knownFiles
 
 	quitting atomic.Bool
 
 	shortcutsMu       sync.Mutex
-	osShortcuts       []string // the shortcuts currently registered with the OS; guarded by shortcutsMu
+	panelShortcut     *globalshortcut.Applier // the quick panel shortcut's desired and active binding; set by initQuickPanel
+	appliedPanel      appliedPanelSettings    // what reconcilePanel last applied; guarded by shortcutsMu
+	osShortcuts       []string                // the shortcuts the WebView executor registered with the OS; written by panelShortcut only
 	binder            *wailsShortcutBinder
 	modifierOnce      sync.Once
 	modifier          *modifierMonitor // the WebView panel's modifier double-tap trigger; created by modifierMonitor()
@@ -115,6 +122,9 @@ func main() {
 		log.Fatal(err)
 	}
 	host := &HostService{effects: newVisualEffects(), notifier: notifications.New(), wake: make(chan string, 1)}
+	// Follow, not daemon(): after a restart the host did not record (it reported a failure, or the GUI relaunch
+	// failed), the watcher must reach the daemon that actually runs, and every other caller then uses it too.
+	host.settingsWatch = settings.NewWatcher(func() *daemonclient.Client { return daemonclient.Follow(&host.client) }, host.applySettings)
 	host.lastCheck.recordNow()
 	services := append([]application.Service{hostService(host)}, notifierServices(host)...)
 	services = append(services, e2eServices(host)...)
@@ -222,6 +232,7 @@ func (h *HostService) bootstrap() {
 	h.initPanelShortcuts()
 	go h.reconcileAutoStart()
 	h.startTray()
+	h.startSettingsWatch()
 	h.watchNotificationClicks()
 	if startup.silent() {
 		// Silent mode leaves no window to see, so tell the user the app is running.

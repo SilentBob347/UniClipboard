@@ -294,6 +294,15 @@
       "errorMessage": "Automatic restart failed. Please quit the app manually and reopen it to apply the change.",
       "retryButton": "Retry"
     },
+    "partialSave": {
+      "message": "Only part of the change was saved. Saved: {{applied}}. Not saved: {{failed}}. Not attempted: {{skipped}}. The settings now show the stored values.",
+      "owners": {
+        "engine": "sync and device settings",
+        "desktop": "app preferences",
+        "telemetry": "error reporting consent",
+        "none": "none"
+      }
+    },
     "categories": {
       "general": "General",
       "appearance": "Appearance",
@@ -309,6 +318,15 @@
       "general": {
         "title": "General",
         "startupTitle": "Startup",
+        "trayTitle": "Tray",
+        "trayIcon": {
+          "label": "Tray icon",
+          "description": "The icon shown in the menu bar or system tray.",
+          "options": {
+            "glyph": "Default",
+            "cat": "Classic cat"
+          }
+        },
         "saveError": "Failed to save setting",
         "deviceName": {
           "label": "Device Name",
@@ -906,7 +924,12 @@
         "confirmOverride": "Apply anyway (clears conflict)",
         "confirm": "Confirm",
         "cancel": "Cancel",
-        "modified": "Modified"
+        "modified": "Modified",
+        "unsupportedKey": "This key cannot be used in a shortcut: {{key}}",
+        "saveFailed": "Not saved: {{message}}",
+        "notActive": "Saved, but not active. {{active}} still opens the quick panel. ({{error}})",
+        "notActiveNone": "Saved, but not active. No shortcut opens the quick panel now. ({{error}})",
+        "applyUnknown": "Saved, but it is not known whether the shortcut is active. ({{error}})"
       },
       "quickPanel": {
         "compositorShortcuts": "Wayland activation shortcuts are managed by your desktop. Bind the following command in your compositor settings.",

@@ -179,6 +179,15 @@ export function GetQuickPanelDoubleTapAvailability(): $CancellablePromise<$model
 }
 
 /**
+ * GetQuickPanelShortcutStatus reports whether the saved quick panel shortcut is the one the OS holds: active, saved
+ * but not active (with the binding still held and the OS error), unknown, or inactive (ADR-013 section 10). The host
+ * emits quick-panel://shortcut-status on every change.
+ */
+export function GetQuickPanelShortcutStatus(): $CancellablePromise<$models.QuickPanelShortcutStatus> {
+    return $Call.ByID(2070180582);
+}
+
+/**
  * GetVisualEffects returns this GUI session's authoritative state.
  */
 export function GetVisualEffects(): $CancellablePromise<$models.EffectsSnapshot> {
@@ -418,13 +427,6 @@ export function SetQuickPanelPosition(position: $models.QuickPanelPosition): $Ca
  */
 export function SetTrafficLightPosition(offsetX: number | null, offsetY: number | null): $CancellablePromise<void> {
     return $Call.ByID(4096480177, offsetX, offsetY);
-}
-
-/**
- * SetTrayLanguage updates the tray menu labels to the UI language. It does not persist anything.
- */
-export function SetTrayLanguage(language: string): $CancellablePromise<void> {
-    return $Call.ByID(4127180375, language);
 }
 
 /**
