@@ -2,6 +2,8 @@ import { AlertTriangle } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import * as storageApi from '@/api/storage'
+import { ConfigImportRecoveryStatus } from '@/components/config-import/ConfigImportRecoveryStatus'
+import { ConfigImportReplacementDialog } from '@/components/config-import/ConfigImportReplacementDialog'
 import {
   Button,
   Dialog,
@@ -48,6 +50,9 @@ export function ConfigBackupGroup() {
       switch (kind) {
         case 'invalidPassword':
           toast.error(t(`${I18N}.import.invalidPasswordError`))
+          return
+        case 'statusRead':
+          toast.error(t('configImportRecovery.statusReadFailed'))
           return
         case 'incompatible':
           toast.error(t(`${I18N}.import.incompatibleError`))
@@ -99,6 +104,17 @@ export function ConfigBackupGroup() {
 
   return (
     <SettingGroup title={t(`${I18N}.label`)}>
+      <ConfigImportRecoveryStatus
+        onImport={() => {
+          void imp.pickFile()
+        }}
+      />
+      <ConfigImportReplacementDialog
+        open={imp.phase === 'replaceRejected'}
+        busy={imp.busy}
+        onConfirm={imp.confirmReplacement}
+        onCancel={imp.cancelReplacement}
+      />
       <SettingRow label={t(`${I18N}.export.label`)} description={t(`${I18N}.export.description`)}>
         <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
           {exporting ? t(`${I18N}.export.exporting`) : t(`${I18N}.export.button`)}

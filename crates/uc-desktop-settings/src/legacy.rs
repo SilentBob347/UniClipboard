@@ -21,13 +21,19 @@ use crate::{
 };
 
 /// The highest field set this binary imports.
-pub const CURRENT_FIELD_SET: u64 = 1;
+pub const CURRENT_FIELD_SET: u64 = 2;
 
 #[derive(Debug)]
 pub enum ImportOutcome {
     /// Values were copied and the file written. `repeated` is a D8 import after
     /// the legacy values changed; `paths` are the product paths that changed.
-    Imported { repeated: bool, paths: Vec<String> },
+    Imported {
+        repeated: bool,
+        paths: Vec<String>,
+        invalid_fields: Vec<String>,
+        kept_user_fields: Vec<String>,
+        legacy_settings_blake3: String,
+    },
     /// No legacy file: the marker advanced without values.
     MarkedWithoutLegacy,
     /// Marker current and legacy values unchanged: nothing written.
@@ -36,6 +42,74 @@ pub enum ImportOutcome {
     Deferred(&'static str),
     /// The product file write failed; both files are unchanged.
     WriteFailed(io::Error),
+}
+
+impl ImportOutcome {
+    /// Replay migration diagnostics after a caller installs process tracing.
+    /// Only field paths and a source hash are retained, never preference values.
+    pub fn emit_diagnostics(&self) {
+        match self {
+            Self::Imported {
+                repeated,
+                paths,
+                invalid_fields,
+                kept_user_fields,
+                legacy_settings_blake3,
+            } => {
+                info!(field_set = CURRENT_FIELD_SET, repeated, legacy_settings_blake3,
+                    imported = ?paths, "Imported product settings from the legacy Engine settings");
+                if !invalid_fields.is_empty() {
+                    warn!(error_kind = "desktop_settings_import_invalid_field", fields = ?invalid_fields,
+                        "Legacy values kept as stored but not effective; their defaults apply");
+                }
+                if !kept_user_fields.is_empty() {
+                    warn!(error_kind = "desktop_settings_import_kept_user_value", fields = ?kept_user_fields,
+                        "Legacy values differ from values written under this version; the written values stay");
+                }
+            }
+            Self::Deferred(reason) => {
+                warn!(
+                    error_kind = "desktop_settings_import_deferred",
+                    reason, "Product settings import deferred; source preserved for retry"
+                );
+            }
+            Self::WriteFailed(error) => {
+                warn!(error_kind = "desktop_settings_import_write_failed", error = %error,
+                    "Product settings import could not be written; source preserved for retry");
+            }
+            Self::MarkedWithoutLegacy => {
+                info!(
+                    field_set = CURRENT_FIELD_SET,
+                    "Product settings import marker advanced without legacy values"
+                );
+            }
+            Self::Unchanged => {}
+        }
+    }
+
+    /// Prevent a destructive Engine rewrite when a failed import would erase
+    /// legacy product values. Malformed legacy JSON already fails Engine load.
+    pub fn blocks_engine_load(&self, legacy_path: &Path) -> bool {
+        if !matches!(self, Self::Deferred(_) | Self::WriteFailed(_)) {
+            return false;
+        }
+        read(legacy_path)
+            .ok()
+            .flatten()
+            .as_ref()
+            .is_some_and(has_product_fields)
+    }
+}
+
+fn has_product_fields(legacy: &Map<String, Value>) -> bool {
+    SCALARS.iter().any(|field| {
+        field
+            .legacy
+            .is_some_and(|(section, key)| member(Some(legacy), section, key).is_some())
+    }) || legacy.contains_key(LEGACY_SHORTCUTS)
+        || ["silent_start", "lightweight_start", "theme_color"]
+            .iter()
+            .any(|key| member(Some(legacy), "general", key).is_some())
 }
 
 /// Run the import and return its outcome with the resulting effective
@@ -61,6 +135,7 @@ pub fn import_legacy(product_path: &Path, legacy_path: &Path) -> (ImportOutcome,
         }
         _ => effective(read(product_path).ok().flatten().as_ref(), false),
     };
+    outcome.emit_diagnostics();
     (outcome, settings)
 }
 
@@ -112,6 +187,10 @@ fn import_into(
         Err(reason) => return defer(reason),
     };
 
+    // New Engine versions erase product keys. Absence is not a downgrade edit.
+    if stored_set >= CURRENT_FIELD_SET && !has_product_fields(&legacy) {
+        return ImportOutcome::Unchanged;
+    }
     let derived = derive(&legacy);
     let fingerprint = fingerprint(&derived);
     let repeated = if stored_set < CURRENT_FIELD_SET {
@@ -152,6 +231,13 @@ fn import_into(
     let mut invalid = Vec::new();
     let mut kept = Vec::new();
     for (path, (section, key, value)) in &derived {
+        let field_set = SCALARS
+            .iter()
+            .find(|field| field.path() == *path)
+            .map_or(1, |field| field.field_set());
+        if !repeated && field_set <= stored_set {
+            continue;
+        }
         if user_written.contains(path) {
             let legacy_normalized = normalize_one(path, value.as_ref());
             if before.get(path) != legacy_normalized.as_ref() {
@@ -185,7 +271,7 @@ fn import_into(
                 .collect()
         })
         .unwrap_or_default();
-    for id in stale {
+    for id in stale.into_iter().filter(|_| repeated || stored_set < 1) {
         changed.push(shortcut_path(&id));
         set_member(document, SHORTCUTS, &id, None);
     }
@@ -194,30 +280,12 @@ fn import_into(
     if let Err(error) = persist(document, product_path) {
         return write_failed(error);
     }
-    info!(
-        field_set = CURRENT_FIELD_SET,
-        repeated,
-        legacy_settings_blake3 = %source_hash,
-        imported = ?changed,
-        "Imported product settings from the legacy Engine settings"
-    );
-    if !invalid.is_empty() {
-        warn!(
-            error_kind = "desktop_settings_import_invalid_field",
-            fields = ?invalid,
-            "Legacy values kept as stored but not effective; their defaults apply"
-        );
-    }
-    if !kept.is_empty() {
-        warn!(
-            error_kind = "desktop_settings_import_kept_user_value",
-            fields = ?kept,
-            "Legacy values differ from values written under this version; the written values stay"
-        );
-    }
     ImportOutcome::Imported {
         repeated,
         paths: changed,
+        invalid_fields: invalid,
+        kept_user_fields: kept,
+        legacy_settings_blake3: source_hash,
     }
 }
 

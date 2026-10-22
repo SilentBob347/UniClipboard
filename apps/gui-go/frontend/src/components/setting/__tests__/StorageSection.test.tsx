@@ -17,6 +17,24 @@ import type { Settings, SettingContextType } from '@/types/setting'
 // `@/lib/ipc` + `@/components/ui/toast` too).
 // ============================================================================
 
+// Existing isolated scenarios have no pending import; real rejection coverage is daemon E2E.
+vi.mock('@/hooks/useConfigImportStatus', () => ({
+  useConfigImportStatus: () => ({
+    data: { rejectedImport: null },
+    isError: false,
+    refetch: vi.fn(),
+  }),
+}))
+vi.mock('@/store/api', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/store/api')>()),
+  useLazyGetConfigImportStatusQuery: () => [
+    () => ({ unwrap: async () => ({ rejectedImport: null }) }),
+  ],
+}))
+vi.mock('@/api/daemon/config-import', () => ({
+  getConfigImportStatus: vi.fn().mockResolvedValue({ rejectedImport: null }),
+}))
+
 vi.mock('@/hooks/useSetting', () => ({
   useSetting: vi.fn(),
 }))

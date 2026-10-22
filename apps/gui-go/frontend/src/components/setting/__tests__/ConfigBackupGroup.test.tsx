@@ -5,6 +5,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigBackupGroup } from '@/components/setting/ConfigBackupGroup'
 import { commands } from '@/lib/ipc'
 
+// Existing isolated scenarios have no pending import; real rejection coverage is daemon E2E.
+vi.mock('@/hooks/useConfigImportStatus', () => ({
+  useConfigImportStatus: () => ({
+    data: { rejectedImport: null },
+    isError: false,
+    refetch: vi.fn(),
+  }),
+}))
+vi.mock('@/store/api', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/store/api')>()),
+  useLazyGetConfigImportStatusQuery: () => [
+    () => ({ unwrap: async () => ({ rejectedImport: null }) }),
+  ],
+}))
+vi.mock('@/api/daemon/config-import', () => ({
+  getConfigImportStatus: vi.fn().mockResolvedValue({ rejectedImport: null }),
+}))
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -101,7 +119,7 @@ describe('ConfigBackupGroup import', () => {
     await user.click(screen.getByRole('button', { name: `${I18N}.import.confirmButton` }))
 
     await waitFor(() => {
-      expect(mockImport).toHaveBeenCalledWith('hunter2', '/home/test/source.ucbundle')
+      expect(mockImport).toHaveBeenCalledWith('hunter2', '/home/test/source.ucbundle', false)
     })
     await waitFor(() => expect(mockRestartDaemon).toHaveBeenCalledTimes(1))
     expect(mockRestartApp).toHaveBeenCalledTimes(1)
